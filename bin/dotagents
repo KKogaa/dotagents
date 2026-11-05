@@ -296,7 +296,7 @@ function doctor(json = false) {
   else ok(`rulesync ${rs} (pinned ${REQ.rulesync})`);
 
   const ghv = version("gh");
-  if (!ghv) warn(`gh missing: only needed for private sources and the /ship and specflow skills`);
+  if (!ghv) warn(`gh missing: needed for private sources, /ship, product-owner and tech-lead`);
   else if (!satisfies(ghv, REQ.gh)) warn(`gh ${ghv}, want ${REQ.gh}`);
   else {
     const auth = spawnSync("gh", ["auth", "status"], { encoding: "utf8" });

@@ -10,11 +10,12 @@ All sources live in `.rulesync/`:
 
 | Folder | Contents |
 |---|---|
-| `subagents/` | `product-owner` and `product-explorer` (idea → discovery → GitHub backlog), `tech-lead` (decisions, repo, walking skeleton, CI), `ship-*` (planner, implementer, verifier, reviewer, e2e) and the specflow team: `orchestrator`, `conductor`, `worker`, `backend`, `frontend`, `reviewer` |
-| `skills/` | `dotagents` (drives the installer), `ship`, `pr-to-develop`, and the specflow skills (`kickoff`, `plan-feature`, `implement-issue`, `review-pr`, `open-pr`, `openspec-*`, ...) |
+| `subagents/` | `product-owner` and `product-explorer` (idea → discovery → GitHub backlog), `tech-lead` (decisions, repo, walking skeleton, CI), and `ship-*` (planner, implementer, verifier, reviewer, e2e) |
+| `skills/` | `dotagents` (drives the installer), `ship` and `pr-to-develop` |
 | `rules/` | global instructions (kept local, see below) |
 
-The specflow agents and skills come from [KKogaa/specflow](https://github.com/KKogaa/specflow).
+Every agent here is standalone: it works in any repo, with no framework or project
+scripts required beyond `gh` and this repo's `bin/` tools.
 
 ## Requirements
 
@@ -84,8 +85,7 @@ bin/backlog apply docs/product/<slug>/backlog.json      # issues, sub-issues, Pr
 `apply` creates epics as issues with stories as sub-issues, links dependencies, and
 creates the GitHub Project if missing, with Priority and Size fields. Re-running it
 never duplicates: each issue carries a hidden `backlog-id`. GitHub Projects need the
-`project` scope (`gh auth refresh -h github.com -s project`). In OpenSpec or
-specflow repos, the agent stops before `apply` and hands the brief to the conductor.
+`project` scope (`gh auth refresh -h github.com -s project`).
 
 ## Project setup: backlog to walking skeleton
 
@@ -159,5 +159,3 @@ and any extra `/ship` profiles next to `profiles/personal.md`.
   only applies to Claude Code. In Copilot and OpenCode the "read-only" agents are
   read-only only by their instructions.
 - `/ship` is written around Claude Code's subagents; elsewhere it's best-effort.
-- The specflow skills expect a specflow project (`openspec/`, its scripts and
-  `AGENTS.md`). Outside one, they won't have what they need.

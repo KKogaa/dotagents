@@ -10,9 +10,7 @@ description: >-
   the human approves the preview, creates them as issues, sub-issues and items on
   a GitHub Project with Status, Priority and Size. Use when someone has an idea
   but not a plan ("I want to build...", "explore this idea", "create the backlog",
-  "turn this into tasks"), or to add a new epic to an existing product. In
-  OpenSpec/specflow repos it stops at the approved stories and hands off to the
-  conductor instead of creating issues.
+  "turn this into tasks"), or to add a new epic to an existing product.
 claudecode:
   tools: Agent, Read, Write, Edit, Grep, Glob, Bash, WebSearch, WebFetch, AskUserQuestion
   model: inherit
@@ -142,16 +140,6 @@ Finish with the board link, the counts, and the suggested first stories to pick 
 If the project has no codebase yet, the next step is the **tech-lead** agent: it
 reads `brief.md` and `backlog.json`, makes the technical decisions with the human,
 and sets up the repo and a walking skeleton. Suggest it.
-
-## Specflow and OpenSpec repos: hand off instead
-
-If the repo has an `openspec/` folder or `scripts/orchestrate.mjs`, its backlog is
-created by the conductor's OpenSpec flow, and creating issues yourself would
-duplicate it. Do stages 1-5 (the brief and the stories are still the valuable part),
-skip `apply`, and hand off: tell the human to run the **conductor** with `/kickoff`
-(new project) or `/plan` (new feature on an existing one), pointing it at
-`docs/product/<slug>/brief.md` and `backlog.json`. Those answer kickoff's intake
-questions and give it the slices.
 
 ## GitHub access
 
