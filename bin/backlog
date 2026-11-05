@@ -1,0 +1,395 @@
+#!/usr/bin/env node
+// backlog: turn an approved backlog file (epics -> stories) into GitHub issues,
+// sub-issues and GitHub Project (v2) items with Status, Priority and Size.
+//
+// Safe to re-run: every issue carries a hidden `<!-- backlog-id: <id> -->`
+// marker, so existing items are found and skipped (or updated with --update)
+// instead of duplicated. Uses the `gh` CLI; set GH_TOKEN to pick the account.
+//
+//   backlog schema                    print an example backlog file
+//   backlog validate <file>           check the file, no network
+//   backlog plan <file>               read GitHub, show what apply would do
+//   backlog apply <file> [--update]   create (and with --update, rewrite) items
+
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+
+const PRIORITIES = ["P0", "P1", "P2"];
+const SIZES = ["XS", "S", "M", "L", "XL"];
+const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
+const MARKER = (id) => `<!-- backlog-id: ${id} -->`;
+const MARKER_RE = /<!-- backlog-id: ([a-z0-9-]+) -->/;
+const LABELS = {
+  epic: { color: "5319e7", description: "A user-facing outcome, split into stories" },
+  story: { color: "0e8a16", description: "A user story with acceptance criteria" },
+};
+
+const EXAMPLE = {
+  repo: "owner/repo",
+  project: { owner: "owner", title: "Product backlog" },
+  product: {
+    name: "Example",
+    problem: "Who has what problem, in one or two sentences.",
+    vision: "What the product does for them, in one sentence.",
+    outcomes: ["A measurable outcome, e.g. a first booking within 5 minutes of sign-up"],
+    outOfScope: ["Things deliberately left out of this backlog"],
+    openQuestions: ["Decisions still to make, with who decides"],
+  },
+  epics: [
+    {
+      id: "onboarding",
+      title: "New users get to their first booking",
+      description: "Why this epic exists and what's in it.",
+      outcome: "How we'll know it worked.",
+      priority: "P0",
+      stories: [
+        {
+          id: "signup-email",
+          title: "Sign up with email",
+          story: "As a new visitor, I want to sign up with my email so that I can save my bookings.",
+          acceptance: [
+            "Given I'm on the sign-up page, when I submit a valid email and password, then my account is created and I'm signed in",
+            "Given the email is already registered, when I submit it, then I see a sign-in link instead of an error",
+          ],
+          priority: "P0",
+          size: "S",
+          notes: "Optional: constraints, links to the discovery brief, designs.",
+          dependsOn: [],
+        },
+      ],
+    },
+  ],
+};
+
+// ---------- helpers ----------
+
+function die(msg) {
+  console.error(`backlog: ${msg}`);
+  process.exit(1);
+}
+
+function gh(args, { input, json = false, allowFail = false } = {}) {
+  const r = spawnSync("gh", args, { input, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (r.error) die(`could not run gh: ${r.error.message}`);
+  if (r.status !== 0) {
+    if (allowFail) return null;
+    const err = `${r.stderr}${r.stdout}`.trim();
+    if (/project/i.test(err) && /scope|INSUFFICIENT_SCOPES|required scopes/i.test(err)) {
+      die(`gh ${args.slice(0, 2).join(" ")} needs the "project" scope.\n` +
+        `Run it yourself once: gh auth refresh -h github.com -s project` +
+        (process.env.GH_TOKEN ? ` -u <the account GH_TOKEN belongs to>` : ""));
+    }
+    die(`gh ${args.join(" ")} failed:\n${err}`);
+  }
+  return json ? JSON.parse(r.stdout || "null") : r.stdout.trim();
+}
+
+function load(file) {
+  if (!file) die("missing <file>");
+  if (!fs.existsSync(file)) die(`${file} not found`);
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (e) {
+    die(`${file} is not valid JSON: ${e.message}`);
+  }
+}
+
+function validate(b) {
+  const errs = [];
+  if (!/^[\w.-]+\/[\w.-]+$/.test(b.repo || "")) errs.push(`repo must be "owner/name"`);
+  if (!b.project?.title && !b.project?.number) errs.push(`project needs a title (or number)`);
+  if (!b.product?.name) errs.push(`product.name is required`);
+  if (!Array.isArray(b.epics) || !b.epics.length) errs.push(`epics must be a non-empty list`);
+  const ids = new Set();
+  const storyIds = new Set();
+  const seen = (id, where) => {
+    if (!ID_RE.test(id || "")) errs.push(`${where}: id "${id}" must be lowercase-kebab-case`);
+    else if (ids.has(id)) errs.push(`${where}: duplicate id "${id}"`);
+    ids.add(id);
+  };
+  for (const [i, e] of (b.epics || []).entries()) {
+    const w = `epics[${i}] (${e.id})`;
+    seen(e.id, w);
+    if (!e.title) errs.push(`${w}: title is required`);
+    if (e.priority && !PRIORITIES.includes(e.priority)) errs.push(`${w}: priority must be one of ${PRIORITIES}`);
+    if (!Array.isArray(e.stories) || !e.stories.length) errs.push(`${w}: needs at least one story`);
+    for (const [j, s] of (e.stories || []).entries()) {
+      const ws = `${w}.stories[${j}] (${s.id})`;
+      seen(s.id, ws);
+      storyIds.add(s.id);
+      if (!s.title) errs.push(`${ws}: title is required`);
+      if (!s.story) errs.push(`${ws}: story ("As a ..., I want ..., so that ...") is required`);
+      if (!Array.isArray(s.acceptance) || !s.acceptance.length) errs.push(`${ws}: needs acceptance criteria`);
+      if (!PRIORITIES.includes(s.priority)) errs.push(`${ws}: priority must be one of ${PRIORITIES}`);
+      if (!SIZES.includes(s.size)) errs.push(`${ws}: size must be one of ${SIZES}`);
+    }
+  }
+  for (const e of b.epics || []) {
+    for (const s of e.stories || []) {
+      for (const d of s.dependsOn || []) {
+        if (!storyIds.has(d)) errs.push(`story ${s.id}: dependsOn "${d}" is not a story id in this file`);
+        if (d === s.id) errs.push(`story ${s.id}: depends on itself`);
+      }
+    }
+  }
+  return errs;
+}
+
+function mustValidate(b) {
+  const errs = validate(b);
+  if (errs.length) die(`invalid backlog:\n  - ${errs.join("\n  - ")}`);
+}
+
+const ref = (num) => (num ? `#${num}` : null);
+
+function epicBody(e) {
+  return [
+    e.description || "",
+    e.outcome ? `**Outcome:** ${e.outcome}` : "",
+    "_The stories for this epic are its sub-issues._",
+    MARKER(e.id),
+  ].filter(Boolean).join("\n\n");
+}
+
+function storyBody(s, epicNum, nums) {
+  const parts = [
+    s.story,
+    "### Acceptance criteria\n" + s.acceptance.map((a) => `- [ ] ${a}`).join("\n"),
+  ];
+  if (s.notes) parts.push(`### Notes\n${s.notes}`);
+  const deps = (s.dependsOn || []).map((d) => ref(nums[d]) || `\`${d}\` (not created yet)`);
+  if (deps.length) parts.push(`### Depends on\n${deps.map((d) => `- ${d}`).join("\n")}`);
+  if (epicNum) parts.push(`Part of #${epicNum}`);
+  parts.push(MARKER(s.id));
+  return parts.join("\n\n");
+}
+
+function projectReadme(p) {
+  const list = (title, xs) => (xs?.length ? `## ${title}\n${xs.map((x) => `- ${x}`).join("\n")}` : "");
+  return [
+    `# ${p.name}`,
+    p.problem ? `**Problem:** ${p.problem}` : "",
+    p.vision ? `**Vision:** ${p.vision}` : "",
+    list("Outcomes", p.outcomes),
+    list("Out of scope", p.outOfScope),
+    list("Open questions", p.openQuestions),
+    "_Generated from the approved backlog by `backlog apply`._",
+  ].filter(Boolean).join("\n\n");
+}
+
+// ---------- GitHub reads ----------
+
+function existingIssues(repo) {
+  const issues = gh(["issue", "list", "-R", repo, "--state", "all", "--limit", "2000",
+    "--json", "number,title,body,url,state"], { json: true });
+  const byId = {};
+  for (const i of issues) {
+    const m = (i.body || "").match(MARKER_RE);
+    if (m) byId[m[1]] = i;
+  }
+  return byId;
+}
+
+function findProject(b) {
+  const owner = b.project.owner || b.repo.split("/")[0];
+  if (b.project.number) {
+    const p = gh(["project", "view", String(b.project.number), "--owner", owner, "--format", "json"], { json: true });
+    return { owner, ...p };
+  }
+  const list = gh(["project", "list", "--owner", owner, "--limit", "100", "--format", "json"], { json: true });
+  const p = (list.projects || []).find((x) => x.title === b.project.title);
+  return p ? { owner, ...p } : { owner, missing: true, title: b.project.title };
+}
+
+// ---------- commands ----------
+
+function plan(b, { json = false } = {}) {
+  mustValidate(b);
+  const existing = existingIssues(b.repo);
+  const project = findProject(b);
+  const rows = [];
+  for (const e of b.epics) {
+    rows.push({ id: e.id, kind: "epic", title: e.title, issue: existing[e.id]?.number || null });
+    for (const s of e.stories) {
+      rows.push({ id: s.id, kind: "story", title: s.title, priority: s.priority, size: s.size, epic: e.id, issue: existing[s.id]?.number || null });
+    }
+  }
+  const out = {
+    repo: b.repo,
+    project: project.missing ? { create: project.title, owner: project.owner } : { number: project.number, url: project.url },
+    create: rows.filter((r) => !r.issue).length,
+    existing: rows.filter((r) => r.issue).length,
+    items: rows,
+  };
+  if (json) return console.log(JSON.stringify(out, null, 2));
+  console.log(`Repo:    ${b.repo}`);
+  console.log(`Project: ${project.missing ? `create "${project.title}" under ${project.owner}` : `#${project.number} ${project.url}`}`);
+  for (const r of rows) {
+    const what = r.issue ? `exists #${r.issue}` : "create";
+    const meta = r.kind === "story" ? ` [${r.priority} ${r.size}]` : "";
+    console.log(`  ${what.padEnd(12)} ${r.kind === "epic" ? "EPIC " : "  - "}${r.title}${meta}`);
+  }
+  console.log(`\n${out.create} to create, ${out.existing} already on GitHub.`);
+}
+
+function ensureLabels(repo) {
+  const have = new Set(gh(["label", "list", "-R", repo, "--limit", "500", "--json", "name"], { json: true }).map((l) => l.name));
+  for (const [name, l] of Object.entries(LABELS)) {
+    if (!have.has(name)) gh(["label", "create", name, "-R", repo, "--color", l.color, "--description", l.description]);
+  }
+}
+
+function ensureProject(b) {
+  let p = findProject(b);
+  if (p.missing) {
+    p = { owner: p.owner, ...gh(["project", "create", "--owner", p.owner, "--title", p.title, "--format", "json"], { json: true }) };
+    console.log(`created project #${p.number} ${p.url}`);
+  }
+  gh(["project", "link", String(p.number), "--owner", p.owner, "--repo", b.repo], { allowFail: true });
+  gh(["project", "edit", String(p.number), "--owner", p.owner, "--readme", projectReadme(b.product),
+    "--description", (b.product.vision || b.product.name).slice(0, 250)]);
+  const fieldList = () => gh(["project", "field-list", String(p.number), "--owner", p.owner, "--limit", "100", "--format", "json"], { json: true }).fields;
+  let fields = fieldList();
+  for (const [name, opts] of [["Priority", PRIORITIES], ["Size", SIZES]]) {
+    if (!fields.some((f) => f.name === name)) {
+      gh(["project", "field-create", String(p.number), "--owner", p.owner, "--name", name,
+        "--data-type", "SINGLE_SELECT", "--single-select-options", opts.join(",")]);
+    }
+  }
+  fields = fieldList();
+  const option = (field, value) => {
+    const f = fields.find((x) => x.name === field);
+    const o = f?.options?.find((x) => x.name.toLowerCase() === String(value).toLowerCase());
+    return f && o ? { fieldId: f.id, optionId: o.id } : null;
+  };
+  return { ...p, option };
+}
+
+function setField(p, itemId, field, value) {
+  const o = p.option(field, value);
+  if (!o) return console.warn(`  warn: project has no "${field}" option "${value}"; left unset`);
+  gh(["project", "item-edit", "--id", itemId, "--project-id", p.id, "--field-id", o.fieldId, "--single-select-option-id", o.optionId]);
+}
+
+function issueNumber(url) {
+  const m = url.match(/\/issues\/(\d+)\s*$/);
+  if (!m) die(`unexpected output from gh issue create: ${url}`);
+  return Number(m[1]);
+}
+
+function apply(b, { update = false, json = false } = {}) {
+  mustValidate(b);
+  const repo = b.repo;
+  ensureLabels(repo);
+  const existing = existingIssues(repo);
+  const project = ensureProject(b);
+  const nums = Object.fromEntries(Object.entries(existing).map(([id, i]) => [id, i.number]));
+  const result = [];
+  const touched = new Set();
+
+  const upsert = (id, title, body, label) => {
+    const cur = existing[id];
+    if (!cur) {
+      const url = gh(["issue", "create", "-R", repo, "--title", title, "--label", label, "--body-file", "-"], { input: body });
+      nums[id] = issueNumber(url);
+      touched.add(id);
+      result.push({ id, action: "created", issue: nums[id], url });
+      console.log(`created #${nums[id]} ${title}`);
+    } else if (update && (cur.title !== title || cur.body.trim() !== body.trim())) {
+      gh(["issue", "edit", String(cur.number), "-R", repo, "--title", title, "--body-file", "-"], { input: body });
+      touched.add(id);
+      result.push({ id, action: "updated", issue: cur.number, url: cur.url });
+      console.log(`updated #${cur.number} ${title}`);
+    } else {
+      result.push({ id, action: "unchanged", issue: cur.number, url: cur.url });
+    }
+  };
+
+  // Pass 1: epics, then stories (bodies may reference numbers not known yet).
+  for (const e of b.epics) upsert(e.id, e.title, epicBody(e), "epic");
+  for (const e of b.epics) for (const s of e.stories) upsert(s.id, s.title, storyBody(s, nums[e.id], nums), "story");
+
+  // Pass 2: fill in "Depends on" numbers for stories created or updated in this run.
+  for (const e of b.epics) {
+    for (const s of e.stories) {
+      if (!touched.has(s.id) || !(s.dependsOn || []).length) continue;
+      gh(["issue", "edit", String(nums[s.id]), "-R", repo, "--body-file", "-"], { input: storyBody(s, nums[e.id], nums) });
+    }
+  }
+
+  // Sub-issues: link each story under its epic (skip links that already exist).
+  for (const e of b.epics) {
+    const linked = new Set((gh(["api", `repos/${repo}/issues/${nums[e.id]}/sub_issues?per_page=100`], { json: true }) || []).map((i) => i.number));
+    for (const s of e.stories) {
+      if (linked.has(nums[s.id])) continue;
+      const restId = gh(["api", `repos/${repo}/issues/${nums[s.id]}`, "--jq", ".id"]);
+      const ok = gh(["api", "-X", "POST", `repos/${repo}/issues/${nums[e.id]}/sub_issues`, "-F", `sub_issue_id=${restId}`], { allowFail: true });
+      if (ok === null) console.warn(`  warn: could not link #${nums[s.id]} under epic #${nums[e.id]} (it may belong to another epic)`);
+    }
+  }
+
+  // Project items and fields. item-add returns the existing item if it's already there.
+  const url = (id) => `https://github.com/${repo}/issues/${nums[id]}`;
+  for (const e of b.epics) {
+    const epicItem = gh(["project", "item-add", String(project.number), "--owner", project.owner, "--url", url(e.id), "--format", "json"], { json: true });
+    if (touched.has(e.id)) {
+      setField(project, epicItem.id, "Status", "Todo");
+      if (e.priority) setField(project, epicItem.id, "Priority", e.priority);
+    }
+    for (const s of e.stories) {
+      const item = gh(["project", "item-add", String(project.number), "--owner", project.owner, "--url", url(s.id), "--format", "json"], { json: true });
+      if (!touched.has(s.id)) continue; // don't overwrite fields people changed on the board
+      setField(project, item.id, "Status", "Todo");
+      setField(project, item.id, "Priority", s.priority);
+      setField(project, item.id, "Size", s.size);
+    }
+  }
+
+  const summary = {
+    project: { number: project.number, url: project.url },
+    created: result.filter((r) => r.action === "created").length,
+    updated: result.filter((r) => r.action === "updated").length,
+    unchanged: result.filter((r) => r.action === "unchanged").length,
+    items: result,
+  };
+  if (json) console.log(JSON.stringify(summary, null, 2));
+  else console.log(`\nDone: ${summary.created} created, ${summary.updated} updated, ${summary.unchanged} unchanged.\nBoard: ${project.url}`);
+}
+
+// ---------- main ----------
+
+const args = process.argv.slice(2);
+const flags = new Set(args.filter((a) => a.startsWith("--")));
+const [cmd, file] = args.filter((a) => !a.startsWith("--"));
+const json = flags.has("--json");
+
+switch (cmd) {
+  case "schema":
+    console.log(JSON.stringify(EXAMPLE, null, 2));
+    break;
+  case "validate": {
+    const errs = validate(load(file));
+    if (json) console.log(JSON.stringify({ ok: !errs.length, errors: errs }, null, 2));
+    else console.log(errs.length ? `invalid:\n  - ${errs.join("\n  - ")}` : "valid");
+    process.exit(errs.length ? 1 : 0);
+  }
+  case "plan":
+    plan(load(file), { json });
+    break;
+  case "apply":
+    apply(load(file), { update: flags.has("--update"), json });
+    break;
+  default:
+    console.log(`Usage: backlog <schema|validate|plan|apply> [file] [--update] [--json]
+
+  schema                    print an example backlog file (the format)
+  validate <file>           check the file; no network
+  plan <file>               read GitHub and show what apply would create
+  apply <file> [--update]   create issues, sub-issues and project items;
+                            --update also rewrites existing issues from the file
+  --json                    machine-readable output
+
+Pick the GitHub account with GH_TOKEN, e.g.
+  GH_TOKEN=$(gh auth token -u <login>) backlog apply backlog.json`);
+    process.exit(cmd ? 1 : 0);
+}

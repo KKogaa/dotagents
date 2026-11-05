@@ -64,4 +64,5 @@ on failure, and runs `rulesync generate` for you unless you pass `--no-generate`
 | `external-agents.json` | external agents, each pinned to a commit `sha` |
 | `requirements.json` | required Node, pinned rulesync, gh and tool versions |
 | `bin/dotagents` | the installer (Node, no dependencies) |
+| `bin/backlog` | turns an approved `backlog.json` into GitHub issues, sub-issues and Project items; used by `product-owner` (`backlog schema` prints the format) |
 | `setup.sh` | bootstrap: gets Node via nvm, then runs `bin/dotagents setup` |

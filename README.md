@@ -10,7 +10,7 @@ All sources live in `.rulesync/`:
 
 | Folder | Contents |
 |---|---|
-| `subagents/` | `ship-*` (planner, implementer, verifier, reviewer, e2e) and the specflow team: `orchestrator`, `conductor`, `worker`, `backend`, `frontend`, `reviewer` |
+| `subagents/` | `product-owner` and `product-explorer` (idea → discovery → GitHub backlog), `ship-*` (planner, implementer, verifier, reviewer, e2e) and the specflow team: `orchestrator`, `conductor`, `worker`, `backend`, `frontend`, `reviewer` |
 | `skills/` | `dotagents` (drives the installer), `ship`, `pr-to-develop`, and the specflow skills (`kickoff`, `plan-feature`, `implement-issue`, `review-pr`, `open-pr`, `openspec-*`, ...) |
 | `rules/` | global instructions (kept local, see below) |
 
@@ -66,6 +66,26 @@ Edit files in `.rulesync/`, never the generated copies, then:
 rulesync generate          # write every tool's files
 bin/dotagents doctor       # versions, installs, and whether generated files are current
 ```
+
+## Product backlog: idea to GitHub Project
+
+Ask the `product-owner` agent with a rough idea. It runs three `product-explorer`
+subagents in parallel (users, market and technical lenses), shows you the directions,
+helps you choose and scope a first version, then writes
+`docs/product/<slug>/brief.md` and `backlog.json` (epics → stories with acceptance
+criteria, priority and size). After you approve the preview, it runs:
+
+```bash
+bin/backlog validate docs/product/<slug>/backlog.json   # format check, no network
+bin/backlog plan  docs/product/<slug>/backlog.json      # what would be created
+bin/backlog apply docs/product/<slug>/backlog.json      # issues, sub-issues, Project items
+```
+
+`apply` creates epics as issues with stories as sub-issues, links dependencies, and
+creates the GitHub Project if missing, with Priority and Size fields. Re-running it
+never duplicates: each issue carries a hidden `backlog-id`. GitHub Projects need the
+`project` scope (`gh auth refresh -h github.com -s project`). In OpenSpec or
+specflow repos, the agent stops before `apply` and hands the brief to the conductor.
 
 ## Adding external skills and agents
 
