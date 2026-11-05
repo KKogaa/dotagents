@@ -1,0 +1,3 @@
+# Work-specific config: used locally by rulesync, never published.
+.rulesync/rules/CLAUDE.md
+.rulesync/skills/ship/profiles/cix.md

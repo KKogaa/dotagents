@@ -1,0 +1,12 @@
+{
+  "$schema": "https://github.com/dyoshikawa/rulesync/releases/latest/download/config-schema.json",
+  // Source of truth for personal, machine-wide agent config.
+  // Edit .rulesync/**, then run `rulesync generate` from this directory.
+  "global": true,
+  "targets": ["claudecode", "copilotcli", "opencode"],
+  "features": ["rules", "subagents", "skills"],
+  // Never sweep ~/.claude/skills or ~/.agents/skills: other installers (jelou, azure, claude.ai sync) live there.
+  "delete": false,
+  "verbose": false,
+  "silent": false
+}
