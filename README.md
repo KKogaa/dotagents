@@ -10,7 +10,7 @@ All sources live in `.rulesync/`:
 
 | Folder | Contents |
 |---|---|
-| `subagents/` | `product-owner` and `product-explorer` (idea → discovery → GitHub backlog), `tech-lead` (decisions, repo, walking skeleton, CI), `developer` with its `frontend` and `backend` subagents (story → PR), and `ship-*` (planner, implementer, verifier, reviewer, e2e) |
+| `subagents/` | `product-owner` and `product-explorer` (idea → discovery → GitHub backlog), `tech-lead` (decisions, repo, walking skeleton, CI), `developer` with its `frontend` and `backend` subagents (story → PR), `reviewer` with its `review-verifier` (verified PR review), and `ship-*` (planner, implementer, verifier, reviewer, e2e) |
 | `skills/` | `dotagents` (drives the installer), `ship` and `pr-to-develop` |
 | `rules/` | global instructions (kept local, see below) |
 
@@ -117,6 +117,21 @@ bin/board move 12 in-review
 bin/board release 12            # give it back
 bin/board status
 ```
+
+## Review: verified PR reviews
+
+The `reviewer` agent reviews any PR or branch, read-only. It checks the change against
+the story's acceptance criteria, `AGENTS.md`, the ADRs and the codebase's own
+precedents, ranks findings as **[Blocker]**, **[Important]** or **[Suggestion]**,
+and gives each one its fix as code (a committable suggestion where it fits). A
+separate `review-verifier` subagent tries to refute every Blocker and Important
+before it's reported, to keep false alarms out. It posts to the PR only after you
+confirm, always as a comment (never approve or merge), and with blockers moves the
+story's card back to In Progress. The `developer` runs it on its own PRs before
+handing them to you. Supports re-review after new commits.
+
+Adapted from CIX's `inic-pull-review-agent-plugin` (MIT): its review method,
+verifier and report format, without the company-specific standards.
 
 ## Adding external skills and agents
 

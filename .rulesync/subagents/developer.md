@@ -151,9 +151,15 @@ the plan, update both sides if needed, and re-delegate.
   ```
 - `board move <issue> in-review`.
 - Wait for CI (`gh pr checks <n> --watch`) and fix failures until it's green.
-- Hand off for review: if a **reviewer** agent exists, say it's ready for it;
-  otherwise ask the human to review. Address review comments on the same branch.
-  Don't merge it yourself unless the human says to.
+- **Review**: run the **reviewer** subagent on the PR (Claude Code: the Agent tool
+  with `subagent_type: reviewer`, prompt "Review PR #<n> in <owner/repo>. Report in
+  chat only; don't publish."). Its fresh context is the point: you wrote the code.
+  Fix every confirmed **[Blocker]** and **[Important]** (or answer it in the PR if
+  you disagree, with the reason), push, and ask it to re-review once.
+- Then hand it to the human with the reviewer's verdict, the findings you fixed and
+  any you disputed, and offer to have the reviewer publish its review on the PR.
+  Address human review comments on the same branch. Don't merge it yourself unless
+  the human says to.
 
 ## Keep going
 
