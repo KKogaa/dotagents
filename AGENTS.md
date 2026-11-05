@@ -65,4 +65,5 @@ on failure, and runs `rulesync generate` for you unless you pass `--no-generate`
 | `requirements.json` | required Node, pinned rulesync, gh and tool versions |
 | `bin/dotagents` | the installer (Node, no dependencies) |
 | `bin/backlog` | turns an approved `backlog.json` into GitHub issues, sub-issues and Project items; used by `product-owner` (`backlog schema` prints the format) |
+| `bin/repo-setup` | creates and configures a GitHub repo (squash-merge, labels, branch protection) and writes PR/issue/ADR templates; used by `tech-lead` |
 | `setup.sh` | bootstrap: gets Node via nvm, then runs `bin/dotagents setup` |

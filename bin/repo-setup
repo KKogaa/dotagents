@@ -1,0 +1,327 @@
+#!/usr/bin/env node
+// repo-setup: the repetitive GitHub part of starting a project, so the tech-lead
+// agent doesn't improvise it. Idempotent: every step checks first and only
+// changes what's missing or different. Uses the `gh` CLI; set GH_TOKEN to pick
+// the account.
+//
+//   repo-setup check <owner/repo> [--json]             read-only report
+//   repo-setup apply <owner/repo> [options]            create / fix on GitHub
+//   repo-setup templates <dir>                         write missing template files
+//                                                      into a local checkout
+
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+
+const RULESET_NAME = "default-branch-protection";
+
+// Kept in sync with bin/backlog (epic, story) and the agents' workflow.
+const LABELS = {
+  epic: ["5319e7", "A user-facing outcome, split into stories"],
+  story: ["0e8a16", "A user story with acceptance criteria"],
+  task: ["1d76db", "A technical task, usually part of a story"],
+  bug: ["d73a4a", "Something isn't working"],
+  chore: ["c5def5", "Tooling, dependencies, CI, housekeeping"],
+  "tech-debt": ["fbca04", "Known shortcut to pay back later"],
+  adr: ["bfd4f2", "An architecture decision to make or record"],
+  blocked: ["b60205", "Waiting on a decision or another item"],
+  "needs-decision": ["e99695", "A human has to decide before work continues"],
+};
+
+const TEMPLATES = {
+  ".github/pull_request_template.md": `## Summary
+- <what changed and why>
+
+Closes #<issue>
+
+## How it was tested
+- <commands run, screenshots, or manual steps>
+
+## Notes
+- <migrations, config or env vars, follow-ups; delete if empty>
+`,
+  ".github/ISSUE_TEMPLATE/config.yml": `blank_issues_enabled: true
+`,
+  ".github/ISSUE_TEMPLATE/bug.yml": `name: Bug
+description: Something isn't working
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. ...\\n2. ...\\n3. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Logs, screenshots, environment
+`,
+  ".github/ISSUE_TEMPLATE/task.yml": `name: Task
+description: A technical task (tooling, refactor, part of a story)
+labels: [task]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What and why
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      placeholder: "- [ ] ...\\n- [ ] ..."
+    validations:
+      required: true
+  - type: input
+    id: story
+    attributes:
+      label: Part of story
+      placeholder: "#123"
+`,
+  "docs/adr/0000-template.md": `# NNNN. <Decision title>
+
+- **Status:** proposed | accepted | superseded by NNNN
+- **Date:** YYYY-MM-DD
+- **Deciders:** <who>
+
+## Context
+<The forces at play: requirements, constraints, what the discovery found. Link the
+product brief and sources.>
+
+## Options
+1. **<Option A>**: <one line>. Pros: ... Cons: ...
+2. **<Option B>**: ...
+
+## Decision
+<What we chose and the main reason.>
+
+## Consequences
+<What gets easier, what gets harder, what we'll have to revisit and when.>
+`,
+};
+
+// ---------- helpers ----------
+
+function die(msg) {
+  console.error(`repo-setup: ${msg}`);
+  process.exit(1);
+}
+
+function gh(args, { input, json = false, allowFail = false } = {}) {
+  const r = spawnSync("gh", args, { input, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+  if (r.error) die(`could not run gh: ${r.error.message}`);
+  if (r.status !== 0) {
+    if (allowFail) return { failed: true, error: `${r.stderr}${r.stdout}`.trim() };
+    die(`gh ${args.join(" ")} failed:\n${`${r.stderr}${r.stdout}`.trim()}`);
+  }
+  return json ? JSON.parse(r.stdout || "null") : r.stdout.trim();
+}
+
+function parseArgs(argv) {
+  const pos = [];
+  const opts = { requireCheck: [] };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (!a.startsWith("--")) pos.push(a);
+    else if (a === "--require-check") opts.requireCheck.push(argv[++i]);
+    else if (["--approvals", "--visibility", "--description"].includes(a)) opts[a.slice(2)] = argv[++i];
+    else opts[a.slice(2)] = true;
+  }
+  return { pos, opts };
+}
+
+function repoInfo(repo) {
+  const r = gh(["repo", "view", repo, "--json",
+    "name,url,visibility,defaultBranchRef,viewerPermission,deleteBranchOnMerge,squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed,isEmpty"],
+  { json: true, allowFail: true });
+  if (!r?.failed) return r;
+  if (/Could not resolve to a Repository|Not Found|HTTP 404/i.test(r.error)) return null;
+  die(`could not read ${repo}:\n${r.error}`);
+}
+
+const fileExists = (repo, p) => !gh(["api", `repos/${repo}/contents/${p}`, "--silent"], { allowFail: true }).failed;
+
+function rulesets(repo) {
+  const r = gh(["api", `repos/${repo}/rulesets`], { json: true, allowFail: true });
+  return r?.failed ? null : r;
+}
+
+function rulesetPayload(opts) {
+  const rules = [
+    { type: "deletion" },
+    { type: "non_fast_forward" },
+    {
+      type: "pull_request",
+      parameters: {
+        required_approving_review_count: Number(opts.approvals || 0),
+        dismiss_stale_reviews_on_push: false,
+        require_code_owner_review: false,
+        require_last_push_approval: false,
+        required_review_thread_resolution: true,
+      },
+    },
+  ];
+  if (opts.requireCheck.length) {
+    rules.push({
+      type: "required_status_checks",
+      parameters: {
+        strict_required_status_checks_policy: false,
+        required_status_checks: opts.requireCheck.map((context) => ({ context })),
+      },
+    });
+  }
+  return {
+    name: RULESET_NAME,
+    target: "branch",
+    enforcement: "active",
+    conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+    rules,
+  };
+}
+
+// ---------- commands ----------
+
+function check(repo, { json = false } = {}) {
+  const res = [];
+  const add = (level, item, message) => res.push({ level, item, message });
+  const info = repoInfo(repo);
+  if (!info) {
+    add("fail", "repo", `${repo} doesn't exist or this account can't see it (create it with: repo-setup apply ${repo} --create --private)`);
+  } else {
+    add("ok", "repo", `${info.url} (${info.visibility.toLowerCase()}, you have ${info.viewerPermission})`);
+    if (!["ADMIN", "MAINTAIN"].includes(info.viewerPermission)) add("warn", "permission", `settings and rulesets need ADMIN or MAINTAIN; you have ${info.viewerPermission}`);
+    const branch = info.defaultBranchRef?.name;
+    if (info.isEmpty || !branch) add("warn", "branch", `the repo is empty: push a first commit before protecting the default branch`);
+    else add("ok", "branch", `default branch: ${branch}`);
+
+    const s = info;
+    s.deleteBranchOnMerge && s.squashMergeAllowed && !s.mergeCommitAllowed && !s.rebaseMergeAllowed
+      ? add("ok", "merge-settings", "squash-merge only, branches deleted on merge")
+      : add("warn", "merge-settings", "not squash-only / delete-on-merge (apply fixes this)");
+
+    const have = new Set(gh(["label", "list", "-R", repo, "--limit", "500", "--json", "name"], { json: true }).map((l) => l.name));
+    const missing = Object.keys(LABELS).filter((l) => !have.has(l));
+    missing.length ? add("warn", "labels", `missing: ${missing.join(", ")}`) : add("ok", "labels", "all workflow labels exist");
+
+    const rs = rulesets(repo);
+    if (rs === null) add("warn", "protection", "can't read rulesets (permission, or a private repo on a free plan)");
+    else rs.some((r) => r.name === RULESET_NAME)
+      ? add("ok", "protection", `ruleset "${RULESET_NAME}" exists`)
+      : add("warn", "protection", "default branch isn't protected (apply --protect)");
+
+    if (!info.isEmpty) {
+      for (const p of ["AGENTS.md", "README.md", ".github/workflows", ...Object.keys(TEMPLATES)]) {
+        fileExists(repo, p) ? add("ok", "file", p) : add("warn", "file", `${p} missing on the default branch`);
+      }
+    }
+  }
+  const errors = res.filter((r) => r.level === "fail").length;
+  if (json) console.log(JSON.stringify({ ok: !errors, repo, results: res }, null, 2));
+  else {
+    for (const r of res) console.log(`  ${{ ok: "ok  ", warn: "warn", fail: "FAIL" }[r.level]}  ${r.item.padEnd(15)} ${r.message}`);
+  }
+  return errors;
+}
+
+function apply(repo, opts) {
+  let info = repoInfo(repo);
+  if (!info) {
+    if (!opts.create) die(`${repo} doesn't exist. Pass --create with --private or --public to create it.`);
+    const vis = opts.public ? "--public" : opts.private ? "--private" : die("--create needs --private or --public");
+    const args = ["repo", "create", repo, vis];
+    if (opts.description) args.push("--description", opts.description);
+    gh(args);
+    console.log(`created ${repo} (${vis.slice(2)})`);
+    info = repoInfo(repo);
+  }
+
+  gh(["repo", "edit", repo, "--delete-branch-on-merge", "--enable-squash-merge",
+    "--enable-merge-commit=false", "--enable-rebase-merge=false", "--allow-update-branch"]);
+  console.log("merge settings: squash only, delete branch on merge, allow updating branches");
+
+  const have = new Set(gh(["label", "list", "-R", repo, "--limit", "500", "--json", "name"], { json: true }).map((l) => l.name));
+  for (const [name, [color, description]] of Object.entries(LABELS)) {
+    if (have.has(name)) continue;
+    gh(["label", "create", name, "-R", repo, "--color", color, "--description", description]);
+    console.log(`label ${name}`);
+  }
+
+  if (opts.protect) {
+    if (info.isEmpty || !info.defaultBranchRef?.name) {
+      console.warn("skipped protection: the repo is empty. Push the first commit, then run apply --protect again.");
+    } else {
+      const rs = rulesets(repo);
+      const payload = JSON.stringify(rulesetPayload(opts));
+      const existing = rs?.find((r) => r.name === RULESET_NAME);
+      const r = existing
+        ? gh(["api", "-X", "PUT", `repos/${repo}/rulesets/${existing.id}`, "--input", "-"], { input: payload, allowFail: true })
+        : gh(["api", "-X", "POST", `repos/${repo}/rulesets`, "--input", "-"], { input: payload, allowFail: true });
+      if (r?.failed) {
+        console.warn(`could not protect the default branch: ${r.error.split("\n")[0]}`);
+        console.warn("(rulesets on private repos need a paid plan; public repos work on free)");
+      } else {
+        const checks = opts.requireCheck.length ? `, required checks: ${opts.requireCheck.join(", ")}` : "";
+        console.log(`protected ${info.defaultBranchRef.name}: PRs only, no force-push or deletion, ${opts.approvals || 0} approval(s)${checks}`);
+      }
+    }
+  }
+  console.log("");
+  return check(repo);
+}
+
+function templates(dir) {
+  if (!dir || !fs.existsSync(dir)) die("templates needs an existing local checkout directory");
+  for (const [rel, content] of Object.entries(TEMPLATES)) {
+    const p = path.join(dir, rel);
+    if (fs.existsSync(p)) {
+      console.log(`exists   ${rel}`);
+      continue;
+    }
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
+    console.log(`created  ${rel}`);
+  }
+}
+
+const { pos, opts } = parseArgs(process.argv.slice(2));
+const [cmd, target] = pos;
+switch (cmd) {
+  case "check":
+    if (!target) die("check needs <owner/repo>");
+    process.exit(check(target, { json: !!opts.json }) ? 1 : 0);
+  case "apply":
+    if (!target) die("apply needs <owner/repo>");
+    process.exit(apply(target, opts) ? 1 : 0);
+  case "templates":
+    templates(target);
+    break;
+  default:
+    console.log(`Usage: repo-setup <check|apply|templates> ...
+
+  check <owner/repo> [--json]       read-only: repo, permissions, merge settings,
+                                    labels, branch protection, key files
+  apply <owner/repo> [options]      create or fix (idempotent):
+    --create --private|--public     create the repo if it doesn't exist
+    --description "<text>"          description for a new repo
+    --protect                       protect the default branch with a ruleset
+    --approvals <n>                 required approvals (default 0: solo + agents)
+    --require-check <name>          required CI check name (repeatable); add it
+                                    once CI has run at least once
+  templates <dir>                   write missing PR/issue templates and the ADR
+                                    template into a local checkout
+
+apply always sets squash-merge only, delete-branch-on-merge, and the workflow
+labels (${Object.keys(LABELS).join(", ")}).
+Pick the account with GH_TOKEN, e.g. GH_TOKEN=$(gh auth token -u <login>) repo-setup ...`);
+    process.exit(cmd ? 1 : 0);
+}

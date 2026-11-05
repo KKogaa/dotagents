@@ -10,7 +10,7 @@ All sources live in `.rulesync/`:
 
 | Folder | Contents |
 |---|---|
-| `subagents/` | `product-owner` and `product-explorer` (idea → discovery → GitHub backlog), `ship-*` (planner, implementer, verifier, reviewer, e2e) and the specflow team: `orchestrator`, `conductor`, `worker`, `backend`, `frontend`, `reviewer` |
+| `subagents/` | `product-owner` and `product-explorer` (idea → discovery → GitHub backlog), `tech-lead` (decisions, repo, walking skeleton, CI), `ship-*` (planner, implementer, verifier, reviewer, e2e) and the specflow team: `orchestrator`, `conductor`, `worker`, `backend`, `frontend`, `reviewer` |
 | `skills/` | `dotagents` (drives the installer), `ship`, `pr-to-develop`, and the specflow skills (`kickoff`, `plan-feature`, `implement-issue`, `review-pr`, `open-pr`, `openspec-*`, ...) |
 | `rules/` | global instructions (kept local, see below) |
 
@@ -86,6 +86,21 @@ creates the GitHub Project if missing, with Priority and Size fields. Re-running
 never duplicates: each issue carries a hidden `backlog-id`. GitHub Projects need the
 `project` scope (`gh auth refresh -h github.com -s project`). In OpenSpec or
 specflow repos, the agent stops before `apply` and hands the brief to the conductor.
+
+## Project setup: backlog to walking skeleton
+
+After the backlog, the `tech-lead` agent makes the technical decisions with you
+(recorded as ADRs in `docs/adr/`), creates and configures the repo, builds a
+walking skeleton (structure, lint, a real test, hello world, CI, deploy), writes
+`AGENTS.md` for the other agents, and adds technical notes to the first stories. The
+GitHub part is scripted and idempotent:
+
+```bash
+bin/repo-setup check owner/repo                          # read-only report
+bin/repo-setup apply owner/repo --create --private       # repo, squash-merge, labels
+bin/repo-setup templates .                               # PR, issue and ADR templates
+bin/repo-setup apply owner/repo --protect --require-check ci   # after CI exists
+```
 
 ## Adding external skills and agents
 

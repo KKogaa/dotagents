@@ -139,6 +139,10 @@ file, overwriting edits people made on GitHub, so only use it when the human ask
 Finish with the board link, the counts, and the suggested first stories to pick up
 (the P0s with no dependencies). Offer to commit `docs/product/<slug>/`.
 
+If the project has no codebase yet, the next step is the **tech-lead** agent: it
+reads `brief.md` and `backlog.json`, makes the technical decisions with the human,
+and sets up the repo and a walking skeleton. Suggest it.
+
 ## Specflow and OpenSpec repos: hand off instead
 
 If the repo has an `openspec/` folder or `scripts/orchestrate.mjs`, its backlog is
