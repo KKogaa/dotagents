@@ -16,10 +16,29 @@ All sources live in `.rulesync/`:
 
 The specflow agents and skills come from [KKogaa/specflow](https://github.com/KKogaa/specflow).
 
+## Requirements
+
+This repo is only the source files; it does nothing without
+[rulesync](https://github.com/dyoshikawa/rulesync), the CLI that turns `.rulesync/`
+into each tool's own format and folders. You need:
+
+- **Node.js 22.22 or newer** (rulesync's stated minimum) and npm. Any installer works;
+  I use nvm.
+- **rulesync**, installed globally:
+  ```bash
+  npm install -g rulesync
+  rulesync --version   # tested with 42.0.0
+  ```
+  Other options: `brew install rulesync`, or run it without installing via
+  `npx rulesync <command>`.
+- At least one of the target tools: Claude Code, GitHub Copilot CLI or OpenCode.
+
+If you use nvm, rulesync is installed per Node version: after `nvm use <other>`,
+reinstall it or the `rulesync` command won't be found.
+
 ## Install
 
 ```bash
-npm install -g rulesync
 git clone https://github.com/KKogaa/dotagents
 ln -s "$PWD/dotagents" ~/.aiglobal   # optional, a stable path
 cd dotagents && rulesync generate
