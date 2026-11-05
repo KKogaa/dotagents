@@ -161,7 +161,8 @@ design system, observability) becomes `task` issues: create them with
 in the stories that need them. Show the list to the human before creating them.
 
 Finish with the repo and board links, the ADRs, the follow-ups only the human can do
-(accounts, secrets, a domain), and the first stories ready to pick up.
+(accounts, secrets, a domain), and the first stories ready to pick up. The
+**developer** agent works them from the board (`next`, or `work on #N`).
 
 ## GitHub access
 

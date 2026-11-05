@@ -1,0 +1,307 @@
+#!/usr/bin/env node
+// board: the GitHub Project (v2) moves a developer agent makes, scripted so they
+// are consistent: find the next story, claim it, move its card, release it.
+// Uses the `gh` CLI (GraphQL); set GH_TOKEN to pick the account.
+//
+//   board status                      counts per column, plus who has what
+//   board next                        the next story to work on
+//   board claim <issue>               assign yourself, move to In Progress
+//   board move <issue> <status>       todo | in-progress | in-review | done | <name>
+//   board release <issue>             unassign yourself, move back to Todo
+//
+// Options: --repo owner/name (default: the current repo), --project owner/number
+// (default: the one Project linked to the repo), --json.
+
+import { spawnSync } from "node:child_process";
+
+const PRIORITY_ORDER = { P0: 0, P1: 1, P2: 2 };
+const SIZE_ORDER = { XS: 0, S: 1, M: 2, L: 3, XL: 4 };
+const SKIP_LABELS = new Set(["epic", "blocked", "needs-decision"]);
+const STATUS_ALIASES = {
+  todo: ["ready", "todo", "to do", "backlog"],
+  "in-progress": ["in progress", "doing", "in-progress"],
+  "in-review": ["in review", "review", "in-review"],
+  done: ["done", "closed", "complete"],
+};
+
+// ---------- helpers ----------
+
+function die(msg) {
+  console.error(`board: ${msg}`);
+  process.exit(1);
+}
+
+function gh(args, { json = false, allowFail = false } = {}) {
+  const r = spawnSync("gh", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (r.error) die(`could not run gh: ${r.error.message}`);
+  if (r.status !== 0) {
+    if (allowFail) return null;
+    const err = `${r.stderr}${r.stdout}`.trim();
+    if (/INSUFFICIENT_SCOPES|required scopes|read:project|project scope/i.test(err)) {
+      die("this needs the \"project\" scope. Run it yourself once: gh auth refresh -h github.com -s project");
+    }
+    die(`gh ${args.slice(0, 3).join(" ")} failed:\n${err}`);
+  }
+  return json ? JSON.parse(r.stdout || "null") : r.stdout.trim();
+}
+
+function graphql(query, vars) {
+  const args = ["api", "graphql", "-f", `query=${query}`];
+  for (const [k, v] of Object.entries(vars)) args.push(typeof v === "number" ? "-F" : "-f", `${k}=${v}`);
+  const r = gh(args, { json: true });
+  if (r.errors?.length) die(r.errors.map((e) => e.message).join("\n"));
+  return r.data;
+}
+
+function parseArgs(argv) {
+  const pos = [];
+  const opts = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--json" || a === "--force") opts[a.slice(2)] = true;
+    else if (a.startsWith("--")) opts[a.slice(2)] = argv[++i];
+    else pos.push(a);
+  }
+  return { pos, opts };
+}
+
+const me = (() => {
+  let login;
+  return () => (login ??= gh(["api", "user", "--jq", ".login"]));
+})();
+
+function currentRepo(opts) {
+  if (opts.repo) return opts.repo;
+  const r = gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], { allowFail: true });
+  if (!r) die("not in a GitHub repo; pass --repo owner/name");
+  return r;
+}
+
+// Resolve the project: --project owner/number, or the single project linked to the repo.
+function resolveProject(repo, opts) {
+  let owner;
+  let number;
+  if (opts.project) {
+    const m = opts.project.match(/^([^/]+)\/(\d+)$/);
+    if (!m) die("--project must be owner/number, e.g. octocat/3");
+    [, owner, number] = m;
+  } else {
+    const [o, name] = repo.split("/");
+    const d = graphql(
+      `query($o:String!,$n:String!){repository(owner:$o,name:$n){projectsV2(first:20){nodes{number title closed owner{... on User{login} ... on Organization{login}}}}}}`,
+      { o, n: name },
+    );
+    const open = d.repository.projectsV2.nodes.filter((p) => !p.closed);
+    if (!open.length) die(`no GitHub Project is linked to ${repo}; pass --project owner/number`);
+    if (open.length > 1) die(`several Projects are linked to ${repo} (${open.map((p) => `${p.owner.login}/${p.number} "${p.title}"`).join(", ")}); pass --project`);
+    owner = open[0].owner.login;
+    number = open[0].number;
+  }
+  const p = gh(["project", "view", String(number), "--owner", owner, "--format", "json"], { json: true });
+  const fields = gh(["project", "field-list", String(number), "--owner", owner, "--limit", "100", "--format", "json"], { json: true }).fields;
+  const status = fields.find((f) => f.name === "Status");
+  if (!status?.options) die(`project ${owner}/${number} has no Status field`);
+  return { owner, number: Number(number), id: p.id, url: p.url, title: p.title, status };
+}
+
+const ITEMS_QUERY = `query($id:ID!,$after:String){node(id:$id){... on ProjectV2{items(first:100,after:$after){
+  pageInfo{hasNextPage endCursor}
+  nodes{id
+    fieldValues(first:30){nodes{... on ProjectV2ItemFieldSingleSelectValue{name field{... on ProjectV2SingleSelectField{name}}}}}
+    content{... on Issue{number title url state body
+      repository{nameWithOwner}
+      assignees(first:10){nodes{login}}
+      labels(first:30){nodes{name}}}}}}}}}`;
+
+function items(project) {
+  const all = [];
+  let after = null;
+  do {
+    const vars = { id: project.id };
+    if (after) vars.after = after;
+    const page = graphql(ITEMS_QUERY, vars).node.items;
+    for (const n of page.nodes) {
+      if (!n.content?.number) continue; // draft items and PRs are not stories
+      const f = {};
+      for (const v of n.fieldValues.nodes) if (v?.field?.name) f[v.field.name] = v.name;
+      const c = n.content;
+      all.push({
+        itemId: n.id,
+        number: c.number,
+        title: c.title,
+        url: c.url,
+        state: c.state,
+        repo: c.repository.nameWithOwner,
+        assignees: c.assignees.nodes.map((a) => a.login),
+        labels: c.labels.nodes.map((l) => l.name),
+        status: f.Status || null,
+        priority: f.Priority || null,
+        size: f.Size || null,
+        dependsOn: dependsOn(c.body || ""),
+      });
+    }
+    after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+  } while (after);
+  return all;
+}
+
+// "### Depends on" section written by bin/backlog, plus "Depends on #N" / "Blocked by #N" anywhere.
+function dependsOn(body) {
+  const nums = new Set();
+  const sec = body.match(/###\s*Depends on\s*\n([\s\S]*?)(\n###|\n\n[^-\s]|$)/i);
+  if (sec) for (const m of sec[1].matchAll(/#(\d+)/g)) nums.add(Number(m[1]));
+  for (const m of body.matchAll(/(?:depends on|blocked by)\s+#(\d+)/gi)) nums.add(Number(m[1]));
+  return [...nums];
+}
+
+function statusOption(project, wanted) {
+  const opts = project.status.options;
+  const key = wanted.toLowerCase();
+  const names = STATUS_ALIASES[key] || [key];
+  for (const n of names) {
+    const o = opts.find((x) => x.name.toLowerCase() === n);
+    if (o) return o;
+  }
+  return null;
+}
+
+const isReady = (project, it) => {
+  const ready = statusOption(project, "todo");
+  return !it.status || (ready && it.status === ready.name);
+};
+
+function setStatus(project, it, wanted) {
+  let o = statusOption(project, wanted);
+  let note = "";
+  if (!o && wanted === "in-review") {
+    o = statusOption(project, "in-progress");
+    note = ` (the board has no "In review" column, so it stays in "${o?.name}"; the open PR shows it's in review)`;
+  }
+  if (!o) die(`the Status field has no "${wanted}" option (it has: ${project.status.options.map((x) => x.name).join(", ")})`);
+  gh(["project", "item-edit", "--id", it.itemId, "--project-id", project.id, "--field-id", project.status.id, "--single-select-option-id", o.id]);
+  return { status: o.name, note };
+}
+
+function findItem(project, repo, num) {
+  const it = items(project).find((x) => x.number === Number(num) && x.repo.toLowerCase() === repo.toLowerCase());
+  if (!it) die(`#${num} from ${repo} is not on project ${project.owner}/${project.number}`);
+  return it;
+}
+
+function out(opts, data, text) {
+  console.log(opts.json ? JSON.stringify(data, null, 2) : text);
+}
+
+// ---------- commands ----------
+
+function cmdStatus(repo, project, opts) {
+  const all = items(project).filter((x) => x.repo.toLowerCase() === repo.toLowerCase());
+  const cols = {};
+  for (const it of all) (cols[it.status || "No status"] ||= []).push(it);
+  const lines = [`${project.title} (${project.url})`];
+  for (const [col, xs] of Object.entries(cols)) {
+    lines.push(`\n${col} (${xs.length})`);
+    for (const x of xs) lines.push(`  #${x.number} ${x.title}${x.assignees.length ? `  @${x.assignees.join(", @")}` : ""}${x.priority ? `  [${x.priority}${x.size ? " " + x.size : ""}]` : ""}`);
+  }
+  out(opts, { project: { owner: project.owner, number: project.number, url: project.url }, columns: cols }, lines.join("\n"));
+}
+
+function candidates(repo, project, all = items(project)) {
+  const byNum = new Map(all.filter((x) => x.repo.toLowerCase() === repo.toLowerCase()).map((x) => [x.number, x]));
+  const closed = (n) => {
+    const d = byNum.get(n);
+    if (d) return d.state !== "OPEN";
+    const s = gh(["issue", "view", String(n), "-R", repo, "--json", "state", "--jq", ".state"], { allowFail: true });
+    return s !== "OPEN"; // missing or closed issues don't block
+  };
+  const login = me();
+  return [...byNum.values()]
+    .filter((x) => x.state === "OPEN" && isReady(project, x))
+    .filter((x) => !x.labels.some((l) => SKIP_LABELS.has(l)))
+    .filter((x) => !x.assignees.length || (x.assignees.length === 1 && x.assignees[0] === login))
+    .map((x) => ({ ...x, blockedBy: x.dependsOn.filter((n) => !closed(n)) }))
+    .sort((a, b) =>
+      (a.blockedBy.length > 0) - (b.blockedBy.length > 0) ||
+      (PRIORITY_ORDER[a.priority] ?? 9) - (PRIORITY_ORDER[b.priority] ?? 9) ||
+      (SIZE_ORDER[a.size] ?? 9) - (SIZE_ORDER[b.size] ?? 9) ||
+      a.number - b.number);
+}
+
+function cmdNext(repo, project, opts) {
+  const all = candidates(repo, project);
+  const ready = all.filter((x) => !x.blockedBy.length);
+  const next = ready[0] || null;
+  const blocked = all.filter((x) => x.blockedBy.length).map((x) => ({ number: x.number, title: x.title, blockedBy: x.blockedBy }));
+  out(opts, { next, readyCount: ready.length, blocked },
+    next
+      ? `next: #${next.number} ${next.title} [${next.priority || "-"} ${next.size || "-"}]\n${next.url}\n${ready.length - 1} more ready, ${blocked.length} blocked by dependencies`
+      : `nothing ready.${blocked.length ? ` Blocked: ${blocked.map((b) => `#${b.number} (by #${b.blockedBy.join(", #")})`).join("; ")}` : ""}`);
+  if (!next) process.exitCode = 2;
+}
+
+function cmdClaim(repo, project, num, opts) {
+  const it = findItem(project, repo, num);
+  const login = me();
+  if (it.state !== "OPEN") die(`#${num} is closed`);
+  const others = it.assignees.filter((a) => a !== login);
+  if (others.length && !opts.force) die(`#${num} is already assigned to @${others.join(", @")}; pick another (or --force)`);
+  if (!isReady(project, it) && !opts.force) die(`#${num} is in "${it.status}", not ready; pick another (or --force)`);
+  if (it.labels.some((l) => SKIP_LABELS.has(l)) && !opts.force) die(`#${num} is labelled ${it.labels.filter((l) => SKIP_LABELS.has(l)).join(", ")}`);
+  if (!it.assignees.includes(login)) gh(["issue", "edit", String(num), "-R", repo, "--add-assignee", login]);
+  // Someone may have claimed it at the same moment: re-read before moving the card.
+  const now = gh(["issue", "view", String(num), "-R", repo, "--json", "assignees", "--jq", "[.assignees[].login]"], { json: true });
+  if (now.some((a) => a !== login) && !opts.force) {
+    gh(["issue", "edit", String(num), "-R", repo, "--remove-assignee", login]);
+    die(`#${num} was claimed by @${now.filter((a) => a !== login).join(", @")} at the same time; pick another`);
+  }
+  const r = setStatus(project, it, "in-progress");
+  out(opts, { claimed: Number(num), assignee: login, status: r.status, url: it.url }, `claimed #${num} as @${login}, moved to "${r.status}"\n${it.url}`);
+}
+
+function cmdMove(repo, project, num, status, opts) {
+  if (!status) die("move needs <issue> <status>");
+  const it = findItem(project, repo, num);
+  const r = setStatus(project, it, status);
+  out(opts, { issue: Number(num), status: r.status }, `#${num} -> "${r.status}"${r.note}`);
+}
+
+function cmdRelease(repo, project, num, opts) {
+  const it = findItem(project, repo, num);
+  const login = me();
+  if (it.assignees.includes(login)) gh(["issue", "edit", String(num), "-R", repo, "--remove-assignee", login]);
+  const r = setStatus(project, it, "todo");
+  out(opts, { released: Number(num), status: r.status }, `released #${num}, moved back to "${r.status}"`);
+}
+
+// ---------- main ----------
+
+const { pos, opts } = parseArgs(process.argv.slice(2));
+const [cmd, a1, a2] = pos;
+const USAGE = `Usage: board <status|next|claim|move|release> [args] [--repo owner/name] [--project owner/number] [--json]
+
+  status                      columns and who has what
+  next                        the next ready story: open, in Todo/Ready, unassigned
+                              (or yours), not epic/blocked/needs-decision, all
+                              dependencies closed; P0 first, then smallest
+                              (exit code 2 when nothing is ready)
+  claim <issue> [--force]     assign yourself and move to In Progress
+  move <issue> <status>       todo | in-progress | in-review | done | <column name>
+  release <issue>             unassign yourself and move back to Todo
+
+Pick the account with GH_TOKEN, e.g. GH_TOKEN=$(gh auth token -u <login>) board next`;
+
+if (!cmd || cmd === "help" || opts.help) {
+  console.log(USAGE);
+  process.exit(cmd ? 0 : 1);
+}
+if (!["status", "next", "claim", "move", "release"].includes(cmd)) die(`unknown command "${cmd}"\n\n${USAGE}`);
+const repo = currentRepo(opts);
+const project = resolveProject(repo, opts);
+if (["claim", "move", "release"].includes(cmd) && !/^\d+$/.test(a1 || "")) die(`${cmd} needs an issue number`);
+({
+  status: () => cmdStatus(repo, project, opts),
+  next: () => cmdNext(repo, project, opts),
+  claim: () => cmdClaim(repo, project, a1, opts),
+  move: () => cmdMove(repo, project, a1, a2, opts),
+  release: () => cmdRelease(repo, project, a1, opts),
+})[cmd]();

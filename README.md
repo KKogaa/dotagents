@@ -10,7 +10,7 @@ All sources live in `.rulesync/`:
 
 | Folder | Contents |
 |---|---|
-| `subagents/` | `product-owner` and `product-explorer` (idea → discovery → GitHub backlog), `tech-lead` (decisions, repo, walking skeleton, CI), and `ship-*` (planner, implementer, verifier, reviewer, e2e) |
+| `subagents/` | `product-owner` and `product-explorer` (idea → discovery → GitHub backlog), `tech-lead` (decisions, repo, walking skeleton, CI), `developer` with its `frontend` and `backend` subagents (story → PR), and `ship-*` (planner, implementer, verifier, reviewer, e2e) |
 | `skills/` | `dotagents` (drives the installer), `ship` and `pr-to-develop` |
 | `rules/` | global instructions (kept local, see below) |
 
@@ -100,6 +100,22 @@ bin/repo-setup check owner/repo                          # read-only report
 bin/repo-setup apply owner/repo --create --private       # repo, squash-merge, labels
 bin/repo-setup templates .                               # PR, issue and ADR templates
 bin/repo-setup apply owner/repo --protect --require-check ci   # after CI exists
+```
+
+## Implementation: story to pull request
+
+The `developer` agent takes the next ready story from the GitHub Project (or the one
+you name), claims it, plans it, and delegates the code to the `frontend` and/or
+`backend` subagents. When a story needs both, it writes the API contract first and
+runs them in parallel. It then verifies every acceptance criterion and the project's
+checks, opens the PR, and moves the card to review. Card moves are scripted:
+
+```bash
+bin/board next                  # next ready story: P0 first, smallest first, deps closed
+bin/board claim 12              # assign yourself, move to In Progress
+bin/board move 12 in-review
+bin/board release 12            # give it back
+bin/board status
 ```
 
 ## Adding external skills and agents
