@@ -11,7 +11,7 @@ All sources live in `.rulesync/`:
 | Folder | Contents |
 |---|---|
 | `subagents/` | `ship-*` (planner, implementer, verifier, reviewer, e2e) and the specflow team: `orchestrator`, `conductor`, `worker`, `backend`, `frontend`, `reviewer` |
-| `skills/` | `ship`, `pr-to-develop`, and the specflow skills (`kickoff`, `plan-feature`, `implement-issue`, `review-pr`, `open-pr`, `openspec-*`, ...) |
+| `skills/` | `dotagents` (drives the installer), `ship`, `pr-to-develop`, and the specflow skills (`kickoff`, `plan-feature`, `implement-issue`, `review-pr`, `open-pr`, `openspec-*`, ...) |
 | `rules/` | global instructions (kept local, see below) |
 
 The specflow agents and skills come from [KKogaa/specflow](https://github.com/KKogaa/specflow).
@@ -40,11 +40,15 @@ reinstall it or the `rulesync` command won't be found.
 
 ```bash
 git clone https://github.com/KKogaa/dotagents
-ln -s "$PWD/dotagents" ~/.aiglobal   # optional, a stable path
-cd dotagents && rulesync generate
+cd dotagents && ./setup.sh
 ```
 
-`rulesync.jsonc` runs in global mode, so `generate` writes to your home directory:
+`setup.sh` gets Node 22.22+ through nvm if needed, then runs `bin/dotagents setup`.
+That command installs the pinned rulesync, links `~/.aiglobal` to the repo, installs
+the external skills and agents, generates every tool's files, and ends with
+`doctor`. Re-run it any time to repair the setup; `./setup.sh --check` only checks.
+
+`rulesync.jsonc` runs in global mode, so generating writes to your home directory:
 
 | Tool | Agents | Skills | Rules |
 |---|---|---|---|
@@ -60,8 +64,48 @@ Edit files in `.rulesync/`, never the generated copies, then:
 
 ```bash
 rulesync generate          # write every tool's files
-rulesync generate --check  # exit 1 if anything is out of date
+bin/dotagents doctor       # versions, installs, and whether generated files are current
 ```
+
+## Adding external skills and agents
+
+`bin/dotagents` installs skills and agents from other GitHub repos, pinned to a
+commit so installs are reproducible:
+
+```bash
+bin/dotagents add-skill anthropics/skills --skills skill-creator
+bin/dotagents add-agent VoltAgent/awesome-claude-code-subagents categories/01-core-development/api-designer.md
+bin/dotagents list                 # what's installed, and at which commit
+bin/dotagents update               # move everything to the latest commit
+bin/dotagents remove-agent api-designer
+```
+
+- **Skills** use rulesync's own sources: they're added to `sources` in
+  `rulesync.jsonc`, pinned in `rulesync.lock`, and installed into the gitignored
+  `.rulesync/skills/.curated/`.
+- **Agents** have no rulesync equivalent, so the script handles them. It fetches the
+  file at a commit, converts it from Claude, Copilot or OpenCode format with
+  `rulesync import` (`--format` overrides the guess from the path), and records the
+  commit in `external-agents.json`. The converted copy is gitignored.
+
+Commit `rulesync.jsonc`, `rulesync.lock` and `external-agents.json`: they're enough
+to reinstall everything with `bin/dotagents install`.
+
+## For agents
+
+Agents can drive all of this. `AGENTS.md` (also read by Claude through `CLAUDE.md`)
+is the reference for an agent working in this repo. The `dotagents` skill is
+installed globally, so an agent in any project knows to `cd ~/.aiglobal` and use
+the installer when you say "install this skill" or paste a GitHub link. `doctor`
+and `list` take `--json`, and every command is non-interactive.
+
+## Versions
+
+`requirements.json` sets the required versions: Node 22.22+, rulesync pinned to an
+exact version, gh, and minimum versions of Claude Code, Copilot CLI and OpenCode.
+Only installed tools are checked, but at least one of the three is required. To
+move to a new rulesync, bump the pin, run `bin/dotagents setup`, and check that
+`doctor` passes.
 
 ## Local-only files
 

@@ -1,0 +1,416 @@
+#!/usr/bin/env node
+// dotagents: install external skills and agents into this repo, then generate.
+//
+// Skills are delegated to rulesync's own declarative sources (rulesync.jsonc
+// "sources" + rulesync.lock). rulesync has no equivalent for agents, so this
+// script handles them: it fetches an agent file from GitHub at a pinned commit,
+// converts it with `rulesync import` (Claude, Copilot or OpenCode format), and
+// writes it to .rulesync/subagents/<name>.md. Pins live in external-agents.json.
+//
+// No dependencies beyond Node 22+, git-free; uses the GitHub REST API.
+// Auth: GITHUB_TOKEN / GH_TOKEN if set, else `gh auth token` if gh is installed.
+
+import { execFileSync, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const MANIFEST = path.join(ROOT, "external-agents.json");
+const AGENTS_DIR = path.join(ROOT, ".rulesync", "subagents");
+const GITIGNORE = path.join(ROOT, ".gitignore");
+const BLOCK_START = "# >>> dotagents external agents (managed by bin/dotagents)";
+const BLOCK_END = "# <<< dotagents external agents";
+
+const USAGE = `Usage: bin/dotagents <command> [options]
+
+Skills (handled by rulesync):
+  add-skill <owner/repo> [--skills a,b] [--path dir] [--ref r]
+                                   Add a skill source and install it.
+Agents:
+  add-agent <owner/repo> <path/to/agent.md> [--ref r] [--name n] [--format f]
+                                   Fetch one agent, pin it, convert it.
+                                   --format: claude | copilot | opencode
+                                   (default: guessed from the path)
+  remove-agent <name>              Remove an external agent.
+
+Both:
+  install                          Fetch everything at the pinned commits, then generate.
+  update                           Move every source to its latest commit, then generate.
+  list                             Show external skill sources and agents.
+
+Setup:
+  doctor                           Check tools, versions, installs and generated files.
+                                   Changes nothing; exits 1 if anything is wrong.
+  setup                            Fix what doctor can fix (pinned rulesync, ~/.aiglobal
+                                   link, external installs, generate), then run doctor.
+
+
+Options:
+  --no-generate                    Skip \`rulesync generate\` after add/install/update.
+  --json                           Machine-readable output for doctor and list.`;
+
+// ---------- helpers ----------
+
+function die(msg) {
+  console.error(`dotagents: ${msg}`);
+  process.exit(1);
+}
+
+function parseArgs(argv) {
+  const pos = [];
+  const opts = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith("--")) {
+      const key = a.slice(2);
+      if (["no-generate", "help", "json"].includes(key)) opts[key] = true;
+      else {
+        const v = argv[++i];
+        if (v === undefined) die(`missing value for --${key}`);
+        opts[key] = v;
+      }
+    } else pos.push(a);
+  }
+  return { pos, opts };
+}
+
+function run(cmd, args, cwd = ROOT) {
+  const r = spawnSync(cmd, args, { cwd, stdio: "inherit" });
+  if (r.error) die(`could not run ${cmd}: ${r.error.message}`);
+  if (r.status !== 0) die(`${cmd} ${args.join(" ")} failed (exit ${r.status})`);
+}
+
+function token() {
+  if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
+  if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
+  try {
+    return execFileSync("gh", ["auth", "token"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return "";
+  }
+}
+
+const TOKEN = token();
+
+async function gh(apiPath, accept = "application/vnd.github+json") {
+  const headers = { Accept: accept, "User-Agent": "dotagents", "X-GitHub-Api-Version": "2022-11-28" };
+  if (TOKEN) headers.Authorization = `Bearer ${TOKEN}`;
+  const res = await fetch(`https://api.github.com/${apiPath}`, { headers });
+  if (!res.ok) die(`GitHub ${apiPath}: ${res.status} ${res.statusText}`);
+  return accept.includes("raw") ? res.text() : res.json();
+}
+
+const resolveSha = async (repo, ref) => (await gh(`repos/${repo}/commits/${encodeURIComponent(ref || "HEAD")}`)).sha;
+const fetchFile = (repo, file, sha) =>
+  gh(`repos/${repo}/contents/${file.split("/").map(encodeURIComponent).join("/")}?ref=${sha}`, "application/vnd.github.raw");
+
+function loadManifest() {
+  if (!fs.existsSync(MANIFEST)) return { agents: [] };
+  return JSON.parse(fs.readFileSync(MANIFEST, "utf8"));
+}
+
+function saveManifest(m) {
+  m.agents.sort((a, b) => a.name.localeCompare(b.name));
+  fs.writeFileSync(MANIFEST, JSON.stringify(m, null, 2) + "\n");
+}
+
+function guessFormat(file) {
+  if (file.endsWith(".agent.md") || file.includes(".github/agents/")) return "copilot";
+  if (/(^|\/)\.?opencode\/agents?\//.test(file)) return "opencode";
+  return "claude";
+}
+
+function baseName(file) {
+  return path.basename(file).replace(/\.agent\.md$/, "").replace(/\.md$/, "");
+}
+
+// Convert an agent file in a tool's native format into rulesync's format by
+// letting `rulesync import` do it in a throwaway project.
+function convert(content, format, name) {
+  const layout = {
+    claude: { target: "claudecode", rel: `.claude/agents/${name}.md` },
+    copilot: { target: "copilot", rel: `.github/agents/${name}.agent.md` },
+    opencode: { target: "opencode", rel: `.opencode/agent/${name}.md` },
+  }[format];
+  if (!layout) die(`unknown --format "${format}" (use claude, copilot or opencode)`);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dotagents-"));
+  try {
+    fs.mkdirSync(path.dirname(path.join(tmp, layout.rel)), { recursive: true });
+    fs.writeFileSync(path.join(tmp, layout.rel), content);
+    const r = spawnSync("rulesync", ["import", "--targets", layout.target, "--features", "subagents"], {
+      cwd: tmp,
+      encoding: "utf8",
+    });
+    if (r.error) die(`could not run rulesync: ${r.error.message} (npm install -g rulesync)`);
+    const out = path.join(tmp, ".rulesync", "subagents", `${name}.md`);
+    if (r.status !== 0 || !fs.existsSync(out)) {
+      die(`rulesync could not convert ${name} as ${format}:\n${r.stdout}${r.stderr}`);
+    }
+    return fs.readFileSync(out, "utf8");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+function localAgentExists(name, manifest) {
+  const file = path.join(AGENTS_DIR, `${name}.md`);
+  return fs.existsSync(file) && !manifest.agents.some((a) => a.name === name);
+}
+
+async function installAgent(a) {
+  const raw = await fetchFile(a.source, a.path, a.sha);
+  const converted = convert(raw, a.format, a.name);
+  fs.mkdirSync(AGENTS_DIR, { recursive: true });
+  fs.writeFileSync(path.join(AGENTS_DIR, `${a.name}.md`), converted);
+  console.log(`agent ${a.name}  <- ${a.source}/${a.path}@${a.sha.slice(0, 7)} (${a.format})`);
+}
+
+// Fetched agents are reproducible from external-agents.json, so keep the
+// generated copies out of git, like rulesync does for .curated/ skills.
+function syncGitignore(manifest) {
+  const lines = manifest.agents.map((a) => `.rulesync/subagents/${a.name}.md`);
+  let text = fs.existsSync(GITIGNORE) ? fs.readFileSync(GITIGNORE, "utf8") : "";
+  const re = new RegExp(`\\n?${BLOCK_START}[\\s\\S]*?${BLOCK_END}\\n?`);
+  text = text.replace(re, "\n");
+  if (lines.length) text = text.replace(/\n*$/, "\n\n") + [BLOCK_START, ...lines, BLOCK_END].join("\n") + "\n";
+  fs.writeFileSync(GITIGNORE, text.replace(/^\n+/, ""));
+}
+
+function generate(opts) {
+  if (opts["no-generate"]) return;
+  run("rulesync", ["generate"]);
+}
+
+function hasSkillSources() {
+  const cfg = fs.readFileSync(path.join(ROOT, "rulesync.jsonc"), "utf8");
+  return /"sources"\s*:\s*\[\s*[{"]/.test(cfg);
+}
+
+// ---------- commands ----------
+
+async function addSkill(pos, opts) {
+  const [source] = pos;
+  if (!source) die("add-skill needs <owner/repo>");
+  const args = ["add", source];
+  if (opts.skills) args.push("--skills", opts.skills);
+  if (opts.path) args.push("--path", opts.path);
+  if (opts.ref) args.push("--ref", opts.ref);
+  run("rulesync", args);
+  generate(opts);
+}
+
+async function addAgent(pos, opts) {
+  const [source, file] = pos;
+  if (!source || !file) die("add-agent needs <owner/repo> <path/to/agent.md>");
+  const manifest = loadManifest();
+  const name = opts.name || baseName(file);
+  if (localAgentExists(name, manifest)) die(`a local agent named "${name}" already exists; pass --name to rename`);
+  const sha = await resolveSha(source, opts.ref);
+  const entry = { name, source, path: file, ref: opts.ref || null, sha, format: opts.format || guessFormat(file) };
+  await installAgent(entry);
+  manifest.agents = manifest.agents.filter((a) => a.name !== name).concat(entry);
+  saveManifest(manifest);
+  syncGitignore(manifest);
+  generate(opts);
+}
+
+async function removeAgent(pos, opts) {
+  const [name] = pos;
+  if (!name) die("remove-agent needs <name>");
+  const manifest = loadManifest();
+  if (!manifest.agents.some((a) => a.name === name)) die(`no external agent named "${name}"`);
+  manifest.agents = manifest.agents.filter((a) => a.name !== name);
+  fs.rmSync(path.join(AGENTS_DIR, `${name}.md`), { force: true });
+  saveManifest(manifest);
+  syncGitignore(manifest);
+  console.log(`removed ${name}. Generated copies in ~/.claude, ~/.copilot and ~/.config/opencode`);
+  console.log(`are not deleted (delete is off); remove them by hand if you want them gone.`);
+  generate(opts);
+}
+
+async function install(opts, update = false) {
+  if (hasSkillSources()) run("rulesync", update ? ["install", "--update"] : ["install"]);
+  const manifest = loadManifest();
+  for (const a of manifest.agents) {
+    if (update) a.sha = await resolveSha(a.source, a.ref);
+    await installAgent(a);
+  }
+  if (update) saveManifest(manifest);
+  syncGitignore(manifest);
+  generate(opts);
+}
+
+// ---------- doctor / setup ----------
+
+const REQ = JSON.parse(fs.readFileSync(path.join(ROOT, "requirements.json"), "utf8"));
+const AIGLOBAL = path.join(os.homedir(), ".aiglobal");
+const TOOL_CMDS = { claude: "claude", copilot: "copilot", opencode: "opencode" };
+
+function version(cmd) {
+  const r = spawnSync(cmd, ["--version"], { encoding: "utf8" });
+  if (r.error || r.status !== 0) return null;
+  const m = `${r.stdout}${r.stderr}`.match(/(\d+)\.(\d+)\.(\d+)/);
+  return m ? m[0] : "unknown";
+}
+
+function cmpVer(a, b) {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  return 0;
+}
+
+// Supports "1.2.3" (exact) and ">=1.2.3".
+function satisfies(v, spec) {
+  if (!v || v === "unknown") return false;
+  if (spec.startsWith(">=")) return cmpVer(v, spec.slice(2)) >= 0;
+  return cmpVer(v, spec) === 0;
+}
+
+function readJson(file) {
+  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null;
+}
+
+function doctor(json = false) {
+  let errors = 0;
+  let warnings = 0;
+  const results = [];
+  const say = (level, m) => {
+    results.push({ level, message: m });
+    if (!json) console.log(`  ${{ ok: "ok   ", warn: "warn ", fail: "FAIL ", skip: "-    " }[level]} ${m}`);
+  };
+  const ok = (m) => say("ok", m);
+  const warn = (m) => (warnings++, say("warn", m));
+  const fail = (m) => (errors++, say("fail", m));
+  const log = (m) => !json && console.log(m);
+
+  log("Tools");
+  const node = process.versions.node;
+  satisfies(node, REQ.node) ? ok(`node ${node} (${REQ.node})`) : fail(`node ${node}, need ${REQ.node}: nvm install 22 && nvm use 22`);
+
+  const rs = version("rulesync");
+  if (!rs) fail(`rulesync missing: npm install -g rulesync@${REQ.rulesync}`);
+  else if (!satisfies(rs, REQ.rulesync)) fail(`rulesync ${rs}, pinned ${REQ.rulesync}: npm install -g rulesync@${REQ.rulesync}`);
+  else ok(`rulesync ${rs} (pinned ${REQ.rulesync})`);
+
+  const ghv = version("gh");
+  if (!ghv) warn(`gh missing: only needed for private sources and the /ship and specflow skills`);
+  else if (!satisfies(ghv, REQ.gh)) warn(`gh ${ghv}, want ${REQ.gh}`);
+  else {
+    const auth = spawnSync("gh", ["auth", "status"], { encoding: "utf8" });
+    auth.status === 0 ? ok(`gh ${ghv}, logged in`) : warn(`gh ${ghv}, not logged in: gh auth login`);
+  }
+
+  let tools = 0;
+  for (const [tool, spec] of Object.entries(REQ.tools)) {
+    const v = version(TOOL_CMDS[tool]);
+    if (!v) say("skip", `${tool} not installed (skipped)`);
+    else if (!satisfies(v, spec)) (tools++, warn(`${tool} ${v}, want ${spec}`));
+    else (tools++, ok(`${tool} ${v} (${spec})`));
+  }
+  if (!tools) fail(`none of ${Object.keys(REQ.tools).join(", ")} is installed`);
+
+  log("\nThis repo");
+  try {
+    fs.realpathSync(AIGLOBAL) === fs.realpathSync(ROOT)
+      ? ok(`~/.aiglobal -> ${ROOT}`)
+      : warn(`~/.aiglobal points elsewhere (${fs.realpathSync(AIGLOBAL)})`);
+  } catch {
+    warn(`~/.aiglobal missing (optional): ln -s ${ROOT} ~/.aiglobal`);
+  }
+
+  const cfg = fs.readFileSync(path.join(ROOT, "rulesync.jsonc"), "utf8");
+  /"global"\s*:\s*true/.test(cfg) ? ok(`rulesync.jsonc is in global mode`) : fail(`rulesync.jsonc is not in global mode`);
+  /"delete"\s*:\s*false/.test(cfg) ? ok(`delete is off`) : fail(`"delete" must be false, or other tools' skills get removed`);
+
+  const lock = readJson(path.join(ROOT, "rulesync.lock"));
+  if (hasSkillSources() && !lock) fail(`skill sources declared but rulesync.lock missing: bin/dotagents install`);
+  for (const [src, s] of Object.entries(lock?.sources || {})) {
+    for (const skill of Object.keys(s.skills || {})) {
+      fs.existsSync(path.join(ROOT, ".rulesync", "skills", ".curated", skill, "SKILL.md"))
+        ? ok(`skill ${skill} <- ${src}@${s.resolvedRef.slice(0, 7)}`)
+        : fail(`skill ${skill} from ${src} not installed: bin/dotagents install`);
+    }
+  }
+  for (const a of loadManifest().agents) {
+    fs.existsSync(path.join(AGENTS_DIR, `${a.name}.md`))
+      ? ok(`agent ${a.name} <- ${a.source}@${a.sha.slice(0, 7)}`)
+      : fail(`agent ${a.name} from ${a.source} not installed: bin/dotagents install`);
+  }
+
+  log("\nGenerated files");
+  if (rs) {
+    const r = spawnSync("rulesync", ["generate", "--check"], { cwd: ROOT, encoding: "utf8" });
+    r.status === 0 ? ok(`~/.claude, ~/.copilot, ~/.config/opencode are up to date`) : fail(`out of date: bin/dotagents setup (or rulesync generate)`);
+  } else fail(`can't check without rulesync`);
+
+  if (json) console.log(JSON.stringify({ ok: errors === 0, errors, warnings, results }, null, 2));
+  else console.log(`\n${errors ? `${errors} problem(s)` : "All good"}${warnings ? `, ${warnings} warning(s)` : ""}.`);
+  return errors;
+}
+
+async function setup(opts) {
+  const node = process.versions.node;
+  if (!satisfies(node, REQ.node)) {
+    die(`node ${node} is older than ${REQ.node}. Run ./setup.sh (it uses nvm), or upgrade Node and re-run.`);
+  }
+  const rs = version("rulesync");
+  if (!satisfies(rs, REQ.rulesync)) {
+    console.log(`installing rulesync@${REQ.rulesync} (found ${rs || "none"})`);
+    run("npm", ["install", "-g", `rulesync@${REQ.rulesync}`]);
+  }
+  if (!fs.existsSync(AIGLOBAL)) {
+    fs.symlinkSync(ROOT, AIGLOBAL);
+    console.log(`linked ~/.aiglobal -> ${ROOT}`);
+  }
+  await install(opts);
+  console.log("");
+  process.exit(doctor() ? 1 : 0);
+}
+
+function list(json = false) {
+  if (json) {
+    const lock = readJson(path.join(ROOT, "rulesync.lock"));
+    const skills = Object.entries(lock?.sources || {}).flatMap(([source, s]) =>
+      Object.keys(s.skills || {}).map((name) => ({ name, source, sha: s.resolvedRef })));
+    const local = (dir) => fs.readdirSync(path.join(ROOT, ".rulesync", dir)).filter((n) => !n.startsWith("."));
+    const ext = loadManifest().agents;
+    console.log(JSON.stringify({
+      externalSkills: skills,
+      externalAgents: ext,
+      localSkills: local("skills"),
+      localAgents: local("subagents").map((n) => n.replace(/\.md$/, "")).filter((n) => !ext.some((a) => a.name === n)),
+    }, null, 2));
+    return;
+  }
+  const lock = readJson(path.join(ROOT, "rulesync.lock"));
+  console.log("External skills (rulesync.jsonc sources, pinned in rulesync.lock):");
+  const skills = Object.entries(lock?.sources || {}).flatMap(([src, x]) =>
+    Object.keys(x.skills || {}).map((n) => `  ${n.padEnd(28)} ${src}@${x.resolvedRef.slice(0, 7)}`));
+  console.log(skills.length ? skills.join("\n") : "  (none)");
+  console.log("\nExternal agents (external-agents.json):");
+  const agents = loadManifest().agents;
+  if (!agents.length) console.log("  (none)");
+  for (const a of agents) console.log(`  ${a.name.padEnd(28)} ${a.source}/${a.path}@${a.sha.slice(0, 7)} (${a.format})`);
+}
+
+const { pos, opts } = parseArgs(process.argv.slice(2));
+const cmd = pos.shift();
+if (!cmd || opts.help) {
+  console.log(USAGE);
+  process.exit(cmd ? 0 : 1);
+}
+const commands = {
+  "add-skill": () => addSkill(pos, opts),
+  "add-agent": () => addAgent(pos, opts),
+  "remove-agent": () => removeAgent(pos, opts),
+  install: () => install(opts),
+  update: () => install(opts, true),
+  list: () => list(!!opts.json),
+  doctor: () => process.exit(doctor(!!opts.json) ? 1 : 0),
+  setup: () => setup(opts),
+};
+if (!commands[cmd]) die(`unknown command "${cmd}"\n\n${USAGE}`);
+await commands[cmd]();
