@@ -1,0 +1,23 @@
+{
+  "lockfileVersion": 1,
+  "sources": {
+    "nextlevelbuilder/ui-ux-pro-max-skill": {
+      "requestedRef": "v2.15.0",
+      "resolvedRef": "a38d04c3d5c298c851dbe5e6ee1965ee3de42cb5",
+      "resolvedAt": "2026-11-09T05:10:41.650Z",
+      "skills": {
+        "design-system": {
+          "integrity": "sha256-bdc9868522c04ea029afbb417dfcb454fea9465e6daf34f509e31b2667ecbf5b"
+        },
+        "design": {
+          "integrity": "sha256-43a300756145a47feafc6b545e8ccf3fde7370d659510b0a4fde26a95c58755e"
+        }
+      },
+      "skillSelection": [
+        "design",
+        "design-system"
+      ],
+      "skillsPath": ".claude/skills"
+    }
+  }
+}

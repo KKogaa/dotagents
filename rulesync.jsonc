@@ -8,5 +8,16 @@
   // Never sweep ~/.claude/skills or ~/.agents/skills: other installers (jelou, azure, claude.ai sync) live there.
   "delete": false,
   "verbose": false,
-  "silent": false
+  "silent": false,
+  "sources": [
+    {
+      "source": "nextlevelbuilder/ui-ux-pro-max-skill",
+      "skills": [
+        "design",
+        "design-system"
+      ],
+      "ref": "v2.15.0",
+      "path": ".claude/skills"
+    }
+  ]
 }
