@@ -178,8 +178,9 @@ the plan, update both sides if needed, and re-delegate.
   criterion's status, what the push deploys (from the project config, e.g. "a push to
   `feature/**` deploys to the shared d01"), and any e2e scenarios with their real side
   effects (who gets a message). Ask for one confirmation covering the push, the e2e run,
-  later fix pushes to this branch, and opening the PR; wait for an explicit yes. The
-  human may approve some and not others.
+  later fix pushes to this branch, opening the PR, publishing the automated review
+  comments on the PR, and resolving fixed review threads after re-review; wait for an
+  explicit yes. The human may approve some and not others.
 - Push and open the PR. Use the profile's PR format; without one:
   ```markdown
   ## Summary
@@ -206,22 +207,45 @@ the plan, update both sides if needed, and re-delegate.
   then stop and ask. BLOCKED or INCONCLUSIVE: report it; don't retry blindly.
 - Wait for CI (`gh pr checks <n> --watch`). Fix a failure once; if it fails again,
   stop and ask the human.
-- **Single verification gate**: run the review subagent on the PR ("Review PR #<n> in
-  <owner/repo>. Report in chat only; don't publish."):
+- **Single verification gate**: run the review subagent on the PR and **always publish
+  the first review's comments on the PR** (as `COMMENT`, never `APPROVE` or
+  `REQUEST_CHANGES`, covered by the push-gate approval):
   - **Non-personal projects** (e.g. `CIX-SOFTWARE-LABS` / `cix.md` profile): invoke
     **`cix-pr-reviewer` directly** (Claude Code: `subagent_type:
     inic-pr-review:cix-pr-reviewer`; agy: `invoke_subagent` with `TypeName:
     cix-pr-reviewer`) — skip the `reviewer` wrapper hop. `cix-pr-reviewer` runs
-    `cix-pr-verifier` internally.
+    `cix-pr-verifier` internally. Tell it: `"Review PR #<n> in <owner/repo> and publish
+    the review and inline finding comments on the PR (already confirmed by the user; do
+    not approve or request changes)."`
   - **Personal projects** (`KKogaa` / `/mnt/Laplace/projects/personal/`): invoke the
     **`reviewer`** subagent (Claude Code: `subagent_type: reviewer`; agy: `TypeName:
-    reviewer`), which runs the built-in generic review with `review-verifier`.
-  Fix every confirmed **[Bloqueante]**/**[Blocker]** and **[Importante]**/**[Important]**
-  (or answer it in the PR if you disagree, with the reason), push, and ask the same
-  review agent to re-review once.
+    reviewer`), which runs the built-in generic review with `review-verifier`, with the
+    same publish instruction.
+  - **Fallback**: if the review subagent reports its findings in chat without posting to
+    GitHub (e.g. because its tool permissions are read-only), publish the review body and
+    inline finding comments on the PR yourself via `gh api -X POST
+    repos/<owner>/<repo>/pulls/<n>/reviews` with `"event": "COMMENT"` so every finding is
+    recorded on the PR before fixes start.
+  - **Fix round & second review (re-review)**: fix every confirmed
+    **[Bloqueante]**/**[Blocker]** and **[Importante]**/**[Important]** (or reply on its
+    PR thread explaining why if you disagree), push, wait for CI, and ask the same review
+    agent to re-review once and publish its re-review (replying on each previous finding
+    thread with **Corregido**/**Fixed**, **Respondido**/**Answered**, or
+    **Pendiente**/**Open**).
+  - **Resolve fixed threads after the second review**: after the re-review completes,
+    resolve every PR review thread whose finding was confirmed **Corregido**/**Fixed**
+    (or **Respondido**/**Answered** with no open blocker) using GitHub GraphQL
+    (`resolveReviewThread`), leaving any still-open thread unresolved:
+    ```bash
+    # List unresolved thread IDs
+    gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){pullRequest(number:<n>){reviewThreads(first:100){nodes{id isResolved path line comments(first:1){nodes{body}}}}}}}'
+    # Resolve each fixed thread
+    gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}' -f id=<thread-id>
+    ```
+    Prefix with `GH_TOKEN=$(gh auth token -u KKogaa)` in personal projects.
 - **Move to Done**: only when the review passes (**Listo para fusionar** / **Listo para
-  merge** / **Ready to merge**), all confirmed findings are resolved, and CI is green is
-  the task complete:
+  merge** / **Ready to merge**), all confirmed findings are resolved (and their PR
+  threads resolved), and CI is green is the task complete:
   1. Move the GitHub Project board card to Done (`~/.aiglobal/bin/board move <issue> done`,
      when the repo has a Project and it hasn't been moved already).
   2. When running inside an Agent Orchestrator (`ao`) worker session, submit the
@@ -230,8 +254,8 @@ the plan, update both sides if needed, and re-delegate.
      Orchestrator can still route any later teammate review comments; Orchestrator will
      display the session as `review_pending` until a teammate approves or merges the PR
      on GitHub.
-  3. Hand off to the human with the verdict, the findings you fixed and any you
-     disputed, and offer to publish the review on the PR.
+  3. Hand off to the human with the verdict, the PR link, the findings fixed and threads
+     resolved, and any disputed or deferred items.
   If blockers remain after one fix round or the verdict is **Requiere discusión** /
   **Needs discussion**, do not move it to Done — stop and escalate to the human.
 - **Never merge in non-personal projects**: in any non-personal project (e.g.

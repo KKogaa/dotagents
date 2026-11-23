@@ -45,9 +45,9 @@ owner and route immediately without running `git remote get-url origin`.
   - **Fallback** (if the subagent cannot be invoked): load the `inic-pr-review:pr-review`
     (or `pr-review`) skill directly and follow it from Phase 1 through Phase 7.
   - Pass the target (PR `#N` in `<owner>/<repo>`, branch, or re-review request),
-    `"Report in chat only; do not publish to GitHub."` (unless the human explicitly
-    asked to publish), plus any closing-issue acceptance criteria and `.claude/fleet.md`
-    paths.
+    `"Report in chat only; do not publish to GitHub."` (unless the human or calling
+    `developer` agent explicitly requested publishing on the PR), plus any closing-issue
+    acceptance criteria and `.claude/fleet.md` paths.
   - Preserve `cix-pr-reviewer`'s report, findings, code fixes, and verdict faithfully,
     then go straight to [Single verifier gate → move to Done](#single-verifier-gate--move-to-done).
 - **Personal projects (`KKogaa` / `/mnt/Laplace/projects/personal/`):**
@@ -370,9 +370,12 @@ coverage percentages, or missing tests for code without logic.
 
 ### Publish
 
-Only when the human asks, after showing them **every comment exactly as it will be
-posted** and getting a yes. Re-read the anchored lines on the head first; if they
-moved, rebuild the suggestion or turn it into a plain code block and say so.
+For standalone reviews, publish only when the human asks, after showing them **every
+comment exactly as it will be posted** and getting a yes. When invoked by the
+`developer` agent with explicit publish instructions (already confirmed by the human at
+the push gate), publish directly as `COMMENT` without re-asking. Re-read the anchored
+lines on the head first; if they moved, rebuild the suggestion or turn it into a plain
+code block and say so.
 
 1. **Suggested description**, if any, as a PR comment:
    `gh api -X POST repos/<owner>/<repo>/issues/<n>/comments -F body=@- <<'EOF'` … `EOF`
