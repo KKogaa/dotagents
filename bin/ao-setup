@@ -115,8 +115,9 @@ function fleetBlock(kind, workspace) {
       "and runs `reviewer` as the single verifier gate to Done), reviewing a PR to the `reviewer` agent",
       "(delegates to CIX's `cix-pr-reviewer` in non-personal projects; built-in generic reviewer in",
       "personal projects), an idea or backlog to `product-owner`, project setup or an ADR to `tech-lead`.",
-      "If the prompt names an agent, use that one. Don't switch to another workflow. Keep the human in",
-      "the loop at every plan and approval gate.",
+      "In non-personal projects, never merge a PR into `develop` (even after `reviewer` passes) — leave",
+      "merging to the human. If the prompt names an agent, use that one. Don't switch to another workflow.",
+      "Keep the human in the loop at every plan and approval gate.",
     );
   } else {
     lines.push(
@@ -125,8 +126,9 @@ function fleetBlock(kind, workspace) {
       "carrying the full handoff (goal, acceptance criteria, findings, decisions, the shared contract for",
       "cross-repo changes). `developer` runs `reviewer` as the single verifier gate to Done (CIX's",
       "`cix-pr-reviewer` in non-personal projects, generic reviewer in personal projects), so only spawn",
-      "a standalone `reviewer` session for external or on-demand PR reviews. Relay workers' questions to",
-      "the human; never answer a plan or approval gate on their behalf.",
+      "a standalone `reviewer` session for external or on-demand PR reviews. In non-personal projects,",
+      "never merge a PR into `develop` even after `reviewer` passes — leave merging to the human. Relay",
+      "workers' questions to the human; never answer a plan or approval gate on their behalf.",
     );
   }
   if (workspace) {

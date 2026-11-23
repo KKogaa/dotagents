@@ -65,6 +65,8 @@ the single gate for both non-personal and personal projects:
     `~/.aiglobal/bin/board move <issue> done` (prefix with `GH_TOKEN=$(gh auth token -u KKogaa)`
     in personal projects).
   - Return the report and clearly mark the gate as **VERIFIED — READY FOR DONE**.
+  - **Non-personal projects:** passing this gate **never merges the PR into `develop`**
+    (or any base branch). Leave the PR open for human review and merging.
 - **Fail** — verdict is **Listo tras corregir los bloqueantes** / **Ready once the
   blockers are fixed**, **Requiere discusión** / **Needs discussion**, or CI is red:
   - Do **not** move the card to Done. When a linked issue is on a GitHub Project,

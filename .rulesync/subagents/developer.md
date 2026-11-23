@@ -215,8 +215,12 @@ the plan, update both sides if needed, and re-delegate.
   hasn't moved it already), then hand it to the human with the verdict, the findings you
   fixed and any you disputed, and offer to publish the review on the PR. If blockers
   remain after one fix round or the verdict is **Requiere discusión** / **Needs
-  discussion**, do not move it to Done — stop and escalate to the human. Don't merge the
-  PR yourself unless the human says to.
+  discussion**, do not move it to Done — stop and escalate to the human.
+- **Never merge in non-personal projects**: in any non-personal project (e.g.
+  `CIX-SOFTWARE-LABS`), **never merge the PR into `develop` (or any base branch)**,
+  even after `reviewer` (`cix-pr-reviewer`) passes and says it is ready to merge —
+  always leave the PR open for human approval and merging. In personal projects, also
+  don't merge unless the human explicitly asks you to.
 - **Follow the PR** when the human asks you to (or comes back after reviews): read the
   unresolved review threads (GraphQL query in the user's global instructions; `gh pr
   view` doesn't show them) and triage each: **fix** (a real problem), **reply** (you
