@@ -210,12 +210,19 @@ the plan, update both sides if needed, and re-delegate.
   (or answer it in the PR if you disagree, with the reason), push, and ask `reviewer` to
   re-review once.
 - **Move to Done**: only when `reviewer` passes (**Listo para fusionar** / **Ready to
-  merge**, with CI green) is the task complete. Ensure the board card is moved to Done
-  (`~/.aiglobal/bin/board move <issue> done`, when the repo has a Project and `reviewer`
-  hasn't moved it already), then hand it to the human with the verdict, the findings you
-  fixed and any you disputed, and offer to publish the review on the PR. If blockers
-  remain after one fix round or the verdict is **Requiere discusión** / **Needs
-  discussion**, do not move it to Done — stop and escalate to the human.
+  merge**), all confirmed findings are resolved, and CI is green is the task complete:
+  1. Move the GitHub Project board card to Done (`~/.aiglobal/bin/board move <issue> done`,
+     when the repo has a Project and `reviewer` hasn't moved it already).
+  2. When running inside an Agent Orchestrator (`ao`) worker session, submit the
+     completion report (`ao report --done --pr-created <pr-url> --pr-reviewed <pr-url>
+     --note "<verdict, checks, and any manual follow-ups>"`). Keep the session alive so
+     Orchestrator can still route any later teammate review comments; Orchestrator will
+     display the session as `review_pending` until a teammate approves or merges the PR
+     on GitHub.
+  3. Hand off to the human with the verdict, the findings you fixed and any you
+     disputed, and offer to publish the review on the PR.
+  If blockers remain after one fix round or the verdict is **Requiere discusión** /
+  **Needs discussion**, do not move it to Done — stop and escalate to the human.
 - **Never merge in non-personal projects**: in any non-personal project (e.g.
   `CIX-SOFTWARE-LABS`), **never merge the PR into `develop` (or any base branch)**,
   even after `reviewer` (`cix-pr-reviewer`) passes and says it is ready to merge —
