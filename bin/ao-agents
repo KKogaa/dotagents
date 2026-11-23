@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Live view of the Claude Code subagents running inside each AO session.
+"""Live view of the Claude Code and Antigravity (agy) subagents running inside each AO session.
 
 AO's sidebar shows sessions; the agents a session starts (developer with its backend,
-frontend and e2e subagents, reviewer with cix-pr-reviewer/review-verifier, Explore scouts) run
-inside it as Claude Code subagents. Claude Code records each one under
-~/.claude/projects/<worktree-dir>/<session-uuid>/subagents/agent-*.{jsonl,meta.json};
-this reads those files and redraws every few seconds.
+frontend and e2e subagents, reviewer with cix-pr-reviewer/cix-pr-verifier/review-verifier,
+Explore scouts) run inside it as subagents.
+- Claude Code records each one under ~/.claude/projects/<worktree-dir>/<session-uuid>/subagents/.
+- Antigravity (agy) records each conversation under ~/.gemini/antigravity-acp/brain/<uuid>/.
+This reads those files and redraws every few seconds.
 
 Usage: ao-agents [--once] [--all] [--interval SECONDS] [SESSION_ID ...]
   --all   also list finished subagents of older turns (default: last 15 per session)
@@ -13,18 +14,22 @@ Usage: ao-agents [--once] [--all] [--interval SECONDS] [SESSION_ID ...]
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 HOME = Path.home()
 WORKTREES = HOME / ".ao" / "data" / "worktrees"
 PROJECTS = HOME / ".claude" / "projects"
+AGY_BRAIN = HOME / ".gemini" / "antigravity-acp" / "brain"
 
 GREEN, YELLOW, DIM, BOLD, CYAN, RED, RESET = (
     "\033[32m", "\033[33m", "\033[2m", "\033[1m", "\033[36m", "\033[31m", "\033[0m")
+
+UUID_RE = re.compile(r'"conversationId"\s*:\s*"([a-f0-9-]{36})"')
 
 
 def ao_sessions():
@@ -53,7 +58,8 @@ def first_ts(jsonl):
     try:
         with open(jsonl) as fh:
             for line in fh:
-                ts = parse_ts(json.loads(line).get("timestamp"))
+                entry = json.loads(line)
+                ts = parse_ts(entry.get("timestamp") or entry.get("created_at"))
                 if ts:
                     return ts
     except (OSError, ValueError):
@@ -61,8 +67,8 @@ def first_ts(jsonl):
     return None
 
 
-def last_tool(jsonl):
-    """Name and short argument of the subagent's most recent tool call."""
+def last_tool_claude(jsonl):
+    """Name and short argument of a Claude Code subagent's most recent tool call."""
     try:
         with open(jsonl, "rb") as fh:
             fh.seek(0, os.SEEK_END)
@@ -87,6 +93,51 @@ def last_tool(jsonl):
     return ""
 
 
+def _unquote(val):
+    if not isinstance(val, str):
+        return "" if val is None else str(val)
+    if len(val) >= 2 and val[0] == '"' and val[-1] == '"':
+        try:
+            return str(json.loads(val))
+        except ValueError:
+            return val.strip('"')
+    return val
+
+
+def last_tool_agy(jsonl):
+    """Name and short argument of an Antigravity subagent's most recent tool call."""
+    try:
+        with open(jsonl, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 200_000))
+            lines = fh.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if entry.get("type") != "PLANNER_RESPONSE":
+            continue
+        for tc in reversed(entry.get("tool_calls") or []):
+            if not isinstance(tc, dict):
+                continue
+            args = tc.get("args") or tc.get("arguments") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except ValueError:
+                    args = {}
+            hint = (_unquote(args.get("toolSummary")) or _unquote(args.get("CommandLine"))
+                    or _unquote(args.get("Path")) or _unquote(args.get("Role"))
+                    or _unquote(args.get("TypeName")) or _unquote(args.get("query")) or "")
+            hint = " ".join(hint.split())
+            name = tc.get("name", "?")
+            return f"{name}: {hint[:70]}" if hint else name
+    return ""
+
+
 def fmt_dur(seconds):
     seconds = int(max(0, seconds))
     if seconds < 60:
@@ -96,7 +147,7 @@ def fmt_dur(seconds):
     return f"{seconds // 3600}h{seconds % 3600 // 60:02d}m"
 
 
-def subagents(session_dir):
+def claude_subagents(session_dir):
     """Subagents of the session's current Claude transcript, oldest first."""
     mains = sorted(session_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
     if not mains:
@@ -123,8 +174,150 @@ def subagents(session_dir):
             "start": start.timestamp() if start else mtime,
             "end": mtime,
             "jsonl": jsonl,
+            "harness": "claude-code",
         })
     rows.sort(key=lambda r: r["start"])
+    return rows
+
+
+def agy_transcript(conv_id):
+    return AGY_BRAIN / conv_id / ".system_generated" / "logs" / "transcript.jsonl"
+
+
+def agy_root_map(sessions):
+    """Map AO session id -> root Antigravity conversation UUID."""
+    if not sessions or not AGY_BRAIN.is_dir():
+        return {}
+    need = {}
+    for s in sessions:
+        sid = s["id"]
+        proj = s.get("projectId") or ""
+        needles = [f"/artifacts/{sid}", f"ao session get {sid}"]
+        if proj:
+            needles.append(f"/worktrees/{proj}/{sid}")
+        else:
+            needles.append(f"/sessions/{sid}")
+        need[sid] = needles
+    found = {}
+    candidates = sorted(
+        AGY_BRAIN.glob("*/.system_generated/logs/transcript.jsonl"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for tpath in candidates:
+        if not need:
+            break
+        try:
+            with open(tpath) as fh:
+                head = fh.read(65536)
+        except OSError:
+            continue
+        # Skip subagent transcripts (they start with a SYSTEM_MESSAGE from a parent UUID).
+        if '"source":"SYSTEM"' in head[:200] and '"sender=' in head[:400]:
+            continue
+        if "ao_standing_instructions" in head[:400] and "Suggest the single most useful next message" in head[:800]:
+            continue
+        for sid, needles in list(need.items()):
+            if any(n in head for n in needles):
+                found[sid] = tpath.parents[2].name
+                del need[sid]
+                break
+    return found
+
+
+def agy_spawned_children(conv_id):
+    """Return [(child_uuid, type_name, role)] spawned by conv_id via invoke_subagent."""
+    tpath = agy_transcript(conv_id)
+    if not tpath.is_file():
+        return []
+    pending_calls = []
+    children = []
+    seen = set()
+    try:
+        with open(tpath) as fh:
+            for line in fh:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if entry.get("type") == "PLANNER_RESPONSE":
+                    for tc in entry.get("tool_calls") or []:
+                        if isinstance(tc, dict) and tc.get("name") == "invoke_subagent":
+                            args = tc.get("args") or tc.get("arguments") or {}
+                            if isinstance(args, str):
+                                try:
+                                    args = json.loads(args)
+                                except ValueError:
+                                    args = {}
+                            pending_calls.append((_unquote(args.get("TypeName")) or "?", _unquote(args.get("Role"))))
+                elif entry.get("type") == "GENERIC":
+                    content = entry.get("content") or ""
+                    if "Created the following subagent:" in content:
+                        m = UUID_RE.search(content)
+                        if m:
+                            cid = m.group(1)
+                            if cid not in seen:
+                                seen.add(cid)
+                                tname, role = pending_calls.pop(0) if pending_calls else ("subagent", "")
+                                children.append((cid, tname, role))
+    except OSError:
+        return []
+    return children
+
+
+def agy_is_finished(tpath, parent_id):
+    """True if this subagent sent a message back to its parent and ended its turn cleanly."""
+    sent_to_parent = False
+    last_entry = None
+    try:
+        with open(tpath) as fh:
+            for line in fh:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                last_entry = entry
+                if entry.get("type") == "GENERIC" and f'Message sent to "{parent_id}"' in (entry.get("content") or ""):
+                    sent_to_parent = True
+    except OSError:
+        return False
+    if not sent_to_parent or not last_entry:
+        return False
+    if last_entry.get("type") == "PLANNER_RESPONSE" and not last_entry.get("tool_calls"):
+        return True
+    return False
+
+
+def agy_subagents(root_id):
+    """Walk the nested Antigravity subagent tree rooted at root_id, DFS in spawn order."""
+    rows = []
+    visited = {root_id}
+
+    def walk(parent_id, depth):
+        for cid, tname, role in agy_spawned_children(parent_id):
+            if cid in visited:
+                continue
+            visited.add(cid)
+            tpath = agy_transcript(cid)
+            try:
+                mtime = tpath.stat().st_mtime
+            except OSError:
+                mtime = time.time()
+            start = first_ts(tpath)
+            rows.append({
+                "type": tname,
+                "desc": role,
+                "depth": depth,
+                "background": True,
+                "finished": agy_is_finished(tpath, parent_id),
+                "start": start.timestamp() if start else mtime,
+                "end": mtime,
+                "jsonl": tpath,
+                "harness": "agy",
+            })
+            walk(cid, depth + 1)
+
+    walk(root_id, 1)
     return rows
 
 
@@ -132,17 +325,23 @@ def render(args):
     now = time.time()
     lines = [f"{BOLD}AO agents{RESET}  {DIM}{datetime.now():%H:%M:%S}  "
              f"(Ctrl-C to quit){RESET}", ""]
-    sessions = [s for s in ao_sessions() if s.get("harness") == "claude-code"
+    sessions = [s for s in ao_sessions() if s.get("harness") in ("claude-code", "agy")
                 and (not args.sessions or s["id"] in args.sessions)]
+    agy_roots = agy_root_map([s for s in sessions if s.get("harness") == "agy"])
     if not sessions:
-        lines.append(f"{DIM}No live claude-code AO sessions.{RESET}")
+        lines.append(f"{DIM}No live claude-code or agy AO sessions.{RESET}")
     for s in sessions:
+        harness = s.get("harness", "?")
         activity = s.get("activity", "?")
         colour = GREEN if activity == "active" else DIM
-        lines.append(f"{BOLD}{s['id']}{RESET}  {s.get('displayName', '')}  "
+        lines.append(f"{BOLD}{s['id']}{RESET}  {DIM}({harness}){RESET}  {s.get('displayName', '')}  "
                      f"{colour}[{activity}]{RESET}")
-        rows = subagents(claude_dir(s.get("projectId", ""), s["id"]))
-        if not args.all:
+        if harness == "claude-code":
+            rows = claude_subagents(claude_dir(s.get("projectId", ""), s["id"]))
+        else:
+            root_id = agy_roots.get(s["id"])
+            rows = agy_subagents(root_id) if root_id else []
+        if not args.all and harness == "claude-code":
             running = [r for r in rows if not r["finished"]]
             done = [r for r in rows if r["finished"]][-15:]
             rows = sorted(done + running, key=lambda r: r["start"])
@@ -159,7 +358,7 @@ def render(args):
             mark, col = (f"{YELLOW}●{RESET}", YELLOW) if idle < 300 else (f"{RED}?{RESET}", RED)
             lines.append(f"{indent}{mark} {col}{r['type']:<17}{RESET} {r['desc'][:55]:<55} "
                          f"{fmt_dur(now - r['start'])}{bg}")
-            tool = last_tool(r["jsonl"])
+            tool = last_tool_agy(r["jsonl"]) if r["harness"] == "agy" else last_tool_claude(r["jsonl"])
             quiet = f", quiet {fmt_dur(idle)}" if idle > 30 else ""
             if tool or quiet:
                 lines.append(f"{indent}    {CYAN}↳ {tool}{RESET}{DIM}{quiet}{RESET}")

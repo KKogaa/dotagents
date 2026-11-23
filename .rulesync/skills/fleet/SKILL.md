@@ -133,10 +133,10 @@ the agent you were given; don't spawn yourself again.
 - Follow up with `ao session ls`, `ao session history <id>` and `ao send --session <id> --message "..."`.
   Relay the worker's questions to the human; never answer a plan or approval gate on
   their behalf.
-- To see which agents are running inside each session, the human can run `ao-agents`
-  (`~/.aiglobal/bin/ao-agents`, linked into `~/.local/bin` by `dotagents setup`) in a
-  terminal or an ao terminal tab. Mention it when you start workers. It shows Claude
-  Code sessions only; for an agy worker, use `ao session history <id>`.
+- To see which agents are running inside each session (Claude Code and Antigravity),
+  the human can run `ao-agents` (`~/.aiglobal/bin/ao-agents`, linked into `~/.local/bin`
+  by `dotagents setup`) in a terminal or an ao terminal tab. Mention it when you start
+  workers.
 
 ## Choosing the model
 
