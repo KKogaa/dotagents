@@ -26,6 +26,10 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = JSON.parse(fs.readFileSync(path.join(ROOT, "fleet-models.json"), "utf8"));
 const PROJECTS = path.join(os.homedir(), ".claude", "projects");
+const AGY_BRAIN_DIRS = [
+  path.join(os.homedir(), ".gemini", "antigravity-acp", "brain"),
+  path.join(os.homedir(), ".gemini", "antigravity-cli", "brain"),
+];
 const STATE = path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state"),
   "dotagents", "fleet-route.json");
 const WINDOWS = { "5h": 5 * 3600e3, "7d": 7 * 86400e3 };
@@ -151,12 +155,71 @@ function claudeUsage(now = Date.now()) {
   return totals;
 }
 
+/** Antigravity token totals per window and model from ACP/CLI brain transcripts. */
+function agyUsage(now = Date.now()) {
+  const since = now - WINDOWS["7d"];
+  const totals = {};
+  for (const w of Object.keys(WINDOWS)) totals[w] = { output_tokens: 0, input_tokens: 0, cache_read_tokens: 0, by_model: {} };
+  for (const root of AGY_BRAIN_DIRS) {
+    let dirs;
+    try {
+      dirs = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const d of dirs) {
+      if (!d.isDirectory()) continue;
+      const file = path.join(root, d.name, ".system_generated", "logs", "transcript.jsonl");
+      let st;
+      try {
+        st = fs.statSync(file);
+      } catch {
+        continue;
+      }
+      if (st.mtimeMs < since) continue;
+      let text;
+      try {
+        text = fs.readFileSync(file, "utf8");
+      } catch {
+        continue;
+      }
+      for (const line of text.split("\n")) {
+        if (!line.includes('"PLANNER_RESPONSE"') || !line.includes('"output_tokens"')) continue;
+        let entry;
+        try {
+          entry = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (entry.type !== "PLANNER_RESPONSE") continue;
+        const ts = Date.parse(entry.created_at);
+        if (!ts || ts < since) continue;
+        const model = entry.model || "unknown";
+        const out = entry.output_tokens || 0;
+        const inp = entry.input_tokens || 0;
+        const cache = entry.cache_read_tokens || 0;
+        for (const [w, span] of Object.entries(WINDOWS)) {
+          if (ts < now - span) continue;
+          const t = totals[w];
+          t.output_tokens += out;
+          t.input_tokens += inp;
+          t.cache_read_tokens += cache;
+          const m = (t.by_model[model] ||= { output_tokens: 0, input_tokens: 0 });
+          m.output_tokens += out;
+          m.input_tokens += inp;
+        }
+      }
+    }
+  }
+  return totals;
+}
+
 /** Per-harness availability: readiness, manual marks, and calibrated limits. */
 function harnessStatus({ withUsage = true } = {}) {
   const now = Date.now();
   const ready = harnessReadiness();
   const state = readState();
-  const usage = withUsage ? { "claude-code": claudeUsage(now) } : {};
+  const usage = withUsage ? { "claude-code": claudeUsage(now), agy: agyUsage(now) } : {};
   const status = {};
   for (const [h, cfg] of Object.entries(CONFIG.harnesses)) {
     const s = { harness: h, ...(ready[h] || { installed: false, authorized: false }), available: true, reasons: [] };
@@ -259,7 +322,11 @@ function usageReport(json) {
       }
     }
     if (!s.calibrated) {
-      console.log("  limits not calibrated: compare with /usage in Claude Code and set harnesses.claude-code.limits in fleet-models.json");
+      if (s.harness === "claude-code") {
+        console.log("  limits not calibrated: compare with /usage in Claude Code and set harnesses.claude-code.limits in fleet-models.json");
+      } else if (s.harness === "agy") {
+        console.log("  quota limits not set (mark with `fleet-route mark agy exhausted` if agy hits quota)");
+      }
     }
   }
 }

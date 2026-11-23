@@ -389,6 +389,20 @@ function doctor(json = false) {
         warn(`~/.gemini/antigravity-acp/settings.json is invalid JSON: ${e.message}`);
       }
     }
+    // Check inic-pr-review plugin parity between agy and Claude Code (non-personal PR reviews).
+    const agyInic = readJson(path.join(os.homedir(), ".gemini", "config", "plugins", "inic-pr-review", "plugin.json"));
+    const claudeInstalled = readJson(path.join(os.homedir(), ".claude", "plugins", "installed_plugins.json"));
+    const claudeInicEntry = Object.entries(claudeInstalled?.plugins || {})
+      .find(([k]) => k.startsWith("inic-pr-review@"))?.[1]?.[0];
+    const agyVer = agyInic?.version || null;
+    const claudeVer = claudeInicEntry?.version || null;
+    if (agyVer && claudeVer) {
+      agyVer === claudeVer
+        ? ok(`inic-pr-review v${agyVer} in sync across agy and claude-code`)
+        : warn(`inic-pr-review version drift: agy v${agyVer} vs claude-code v${claudeVer} (update the older plugin)`);
+    } else if (agyVer || claudeVer) {
+      warn(`inic-pr-review installed in ${agyVer ? "agy" : "claude-code"} (v${agyVer || claudeVer}) only — missing in ${agyVer ? "claude-code" : "agy"}`);
+    }
   }
   try {
     JSON.parse(fs.readFileSync(path.join(ROOT, "fleet-models.json"), "utf8"));

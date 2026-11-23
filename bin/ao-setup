@@ -24,13 +24,18 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const START = "<!-- dotagents:fleet (managed by ao-setup) -->";
 const END = "<!-- /dotagents:fleet -->";
+const WATCH_CUE_NAME = "Watch subagents";
+const WATCH_CUE_CMD = "ao-agents";
+const AGY_AGENTS_MD_LIMIT = 24000;
 
 const USAGE = `Usage:
   ao-setup check [PATH...] [--json]
-  ao-setup apply [PATH...] [--agent claude-code] [--base auto|keep|<branch>] [--permission auto|keep|<mode>] [--dry-run]
+  ao-setup apply [PATH...] [--agent auto|agy|claude-code] [--base auto|keep|<branch>] [--permission auto|keep|<mode>] [--dry-run]
 
 PATH is a git repo or a folder of git repos (default: current directory).`;
 
@@ -172,11 +177,45 @@ function projectsByPath() {
   return byPath;
 }
 
+function defaultAgent() {
+  const r = run(path.join(ROOT, "bin", "fleet-route"), ["pick", "plan", "--json"], { allowFail: true });
+  if (r) {
+    try {
+      const picked = JSON.parse(r).harness;
+      if (picked) return picked;
+    } catch {
+      /* fall through */
+    }
+  }
+  return "claude-code";
+}
+
+function hasWatchCue(projectId) {
+  if (!projectId) return false;
+  const out = run("ao", ["cue", "list", "--project", projectId, "--json"], { allowFail: true });
+  if (!out) return false;
+  try {
+    const parsed = JSON.parse(out);
+    const items = Array.isArray(parsed) ? parsed : (parsed.cues || parsed.data || []);
+    return items.some((c) => c.name === WATCH_CUE_NAME);
+  } catch {
+    return false;
+  }
+}
+
+function agentsMdBytes(repo) {
+  try {
+    return fs.statSync(path.join(repo, "AGENTS.md")).size;
+  } catch {
+    return 0;
+  }
+}
+
 function plan(repos, opts) {
   const status = aoJson(["status"]);
   if (status.state !== "ready") die(`the ao daemon is ${status.state || "not running"}: start the Agent Orchestrator app (ao start)`);
   const byPath = projectsByPath();
-  const agent = opts.agent || "claude-code";
+  const agent = (!opts.agent || opts.agent === "auto") ? defaultAgent() : opts.agent;
   const baseOpt = opts.base || "auto";
   const permOpt = opts.permission || "auto";
 
@@ -187,6 +226,12 @@ function plan(repos, opts) {
     const permission = permOpt === "keep" ? null : permOpt;
     const workerRules = mergeRules(cfg.agentRules, fleetBlock("worker", workspace));
     const orchRules = mergeRules(cfg.orchestratorRules, fleetBlock("orchestrator", workspace));
+    const cuePresent = hasWatchCue(project?.id);
+    const mdSize = agentsMdBytes(repo);
+    const warnings = [];
+    if (mdSize > AGY_AGENTS_MD_LIMIT) {
+      warnings.push(`AGENTS.md is ${(mdSize / 1024).toFixed(1)} KB (>24 KB agy truncation limit)`);
+    }
     const changes = [];
     if (!project) changes.push("register");
     if (!project || cfg.worker?.agent !== agent) changes.push(`worker agent -> ${agent}`);
@@ -195,10 +240,11 @@ function plan(repos, opts) {
     if (permission && cfg.agentConfig?.permissions !== permission) changes.push(`permission -> ${permission}`);
     if ((cfg.agentRules || "") !== workerRules) changes.push("worker fleet rules");
     if ((cfg.orchestratorRules || "") !== orchRules) changes.push("orchestrator fleet rules");
+    if (!cuePresent) changes.push(`cue "${WATCH_CUE_NAME}"`);
     return {
       repo, workspace, id: project?.id || null, registered: !!project,
       base: cfg.defaultBranch || project?.defaultBranch || null, wantBase: base,
-      permission, agent, workerRules, orchRules, changes,
+      permission, agent, workerRules, orchRules, cuePresent, warnings, changes,
     };
   });
 }
@@ -211,7 +257,8 @@ function report(items, json) {
   for (const it of items) {
     const name = it.id || path.basename(it.repo);
     const state = it.changes.length ? `needs: ${it.changes.join(", ")}` : "ok";
-    console.log(`  ${it.changes.length ? "todo" : "ok  "}  ${name.padEnd(34)} ${state}`);
+    const warn = it.warnings?.length ? `  [warn: ${it.warnings.join("; ")}]` : "";
+    console.log(`  ${it.changes.length ? "todo" : "ok  "}  ${name.padEnd(34)} ${state}${warn}`);
   }
   const todo = items.filter((i) => i.changes.length).length;
   console.log(`\n${items.length} repo(s), ${todo} to change.`);
@@ -238,6 +285,10 @@ function apply(items, opts) {
     if (it.wantBase) args.push("--default-branch", it.wantBase);
     if (it.permission) args.push("--permission", it.permission);
     run("ao", args);
+    if (!it.cuePresent) {
+      run("ao", ["cue", "create", "--project", id, "--name", WATCH_CUE_NAME, "--command", WATCH_CUE_CMD, "--json"],
+        { allowFail: true });
+    }
   }
 }
 

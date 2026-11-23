@@ -44,6 +44,11 @@ const SUBAGENTS = {
 // External plugin agents (e.g. inic-pr-review) allowed in `agents:` alongside local fleet agents.
 const EXTERNAL_SUBAGENTS = new Set(["cix-pr-reviewer"]);
 const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+// Agents that need a specific agy tool allowlist (e.g. e2e may write scenario scratchpads
+// but must never edit application code).
+const EXPLICIT_TOOLS = {
+  e2e: ["read_file", "write_file", "run_command"],
+};
 const READ_TOOL_MAP = {
   Read: "read_file",
   Grep: "run_command",
@@ -102,7 +107,9 @@ function convertAgent(name, fleet) {
   const tools = String(data.tools || "").split(",").map((t) => t.trim()).filter(Boolean);
   const out = ["---", `name: ${yamlStr(data.name || name)}`, `description: ${yamlStr(data.description || "")}`];
   out.push("model: inherit");
-  if (tools.length && !tools.some((t) => WRITE_TOOLS.has(t))) {
+  if (EXPLICIT_TOOLS[name]) {
+    out.push(`tools: [${EXPLICIT_TOOLS[name].map((t) => `'${t}'`).join(", ")}]`);
+  } else if (tools.length && !tools.some((t) => WRITE_TOOLS.has(t))) {
     const mapped = [...new Set(tools.map((t) => READ_TOOL_MAP[t]).filter(Boolean))];
     out.push(`tools: [${mapped.map((t) => `'${t}'`).join(", ")}]`);
   }

@@ -321,6 +321,34 @@ def agy_subagents(root_id):
     return rows
 
 
+def transcript_stats(jsonl, harness):
+    """Return (step_count, error_count, last_error_msg) for a subagent transcript."""
+    steps = 0
+    errors = 0
+    last_err = ""
+    try:
+        with open(jsonl) as fh:
+            for line in fh:
+                steps += 1
+                if harness == "agy":
+                    if '"status":"ERROR"' in line or '"status": "ERROR"' in line:
+                        try:
+                            e = json.loads(line)
+                            if e.get("status") == "ERROR":
+                                errors += 1
+                                msg = " ".join(str(e.get("error") or "").split())
+                                if msg:
+                                    last_err = msg[:80]
+                        except ValueError:
+                            pass
+                else:
+                    if '"is_error":true' in line or '"is_error": true' in line:
+                        errors += 1
+    except OSError:
+        pass
+    return steps, errors, last_err
+
+
 def render(args):
     now = time.time()
     lines = [f"{BOLD}AO agents{RESET}  {DIM}{datetime.now():%H:%M:%S}  "
@@ -349,9 +377,12 @@ def render(args):
             lines.append(f"  {DIM}no subagents yet{RESET}")
         for r in rows:
             indent = "  " * r["depth"]
+            steps, errs, last_err = transcript_stats(r["jsonl"], r["harness"])
+            err_badge = f" {RED}[{errs} err!]{RESET}" if errs else ""
+            step_txt = f" {DIM}({steps} steps){RESET}" if steps else ""
             if r["finished"]:
-                lines.append(f"{indent}{GREEN}✓{RESET} {r['type']:<17} {r['desc'][:48]:<48} "
-                             f"{GREEN}[done]{RESET} {DIM}{fmt_dur(r['end'] - r['start'])}{RESET}")
+                lines.append(f"{indent}{GREEN}✓{RESET} {r['type']:<17} {r['desc'][:42]:<42} "
+                             f"{GREEN}[done]{RESET} {DIM}{fmt_dur(r['end'] - r['start'])}{RESET}{step_txt}{err_badge}")
                 continue
             idle = now - r["end"]
             if idle >= 300:
@@ -360,11 +391,13 @@ def render(args):
                 mark, col, tag = f"{YELLOW}●{RESET}", YELLOW, f"{YELLOW}[idle {fmt_dur(idle)}]{RESET}"
             else:
                 mark, col, tag = f"{YELLOW}●{RESET}", YELLOW, f"{YELLOW}[running]{RESET}"
-            lines.append(f"{indent}{mark} {col}{r['type']:<17}{RESET} {r['desc'][:48]:<48} "
-                         f"{tag} {DIM}{fmt_dur(now - r['start'])}{RESET}")
+            lines.append(f"{indent}{mark} {col}{r['type']:<17}{RESET} {r['desc'][:42]:<42} "
+                         f"{tag} {DIM}{fmt_dur(now - r['start'])}{RESET}{step_txt}{err_badge}")
             tool = last_tool_agy(r["jsonl"]) if r["harness"] == "agy" else last_tool_claude(r["jsonl"])
             if tool:
                 lines.append(f"{indent}    {CYAN}↳ {tool}{RESET}")
+            if errs and last_err:
+                lines.append(f"{indent}    {RED}✗ {last_err}{RESET}")
         lines.append("")
     lines.append(f"{GREEN}✓ [done]{RESET}{DIM} finished   "
                  f"{YELLOW}● [running]{RESET}{DIM} active   "

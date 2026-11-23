@@ -114,7 +114,9 @@ Run every command you document and make sure each one works from a clean clone.
 ## 4. Rules for agents and people
 
 Write `AGENTS.md`. It's what makes any coding agent useful from the first
-story, so make it concrete and short:
+story, so make it concrete and short (**keep it under 20 KB** — Antigravity truncates
+rule files over 24 KB; put deep stack/domain rules in `.github/instructions/*.md` or
+`docs/` and link to them):
 - **Project**: one line on what it is, the stack, and links to the brief and ADRs
 - **Commands**: a table with Install, Dev, Lint, Type-check, Test, Build and Deploy,
   with the exact commands, all verified

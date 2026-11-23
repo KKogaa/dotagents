@@ -106,8 +106,15 @@ the agent you were given; don't spawn yourself again.
   them, sets the base branch (develop when the repo has one) and writes the rules. It
   is local and idempotent: run `apply` yourself when a repo isn't set up, and say so.
 - One worker per repo: `ao project ls` lists registered projects. A change across
-  repos gets one session per repo, and every prompt carries the same contract between
-  them (event or endpoint name, fields, topic or route) and the order to merge in.
+  repos gets one session per repo (spawned in parallel when independent), and every
+  prompt carries the same **cross-repo contract block** so producer and consumer stay
+  aligned:
+  ```markdown
+  ## Cross-repo contract
+  - Contract: <topic/queue/endpoint, payload fields, filter/subject, error/idempotency rules>
+  - Repos & merge order: 1. <consumer-repo> (PR #...) -> 2. <producer-repo> (PR #...)
+  - Review gate: each repo passes its own reviewer (`cix-pr-reviewer` in non-personal repos) before merge
+  ```
 - Pick the harness and model with `fleet-route` (see "Choosing the model" below), then
   spawn with the agent named in the first line of the prompt:
 

@@ -169,6 +169,10 @@ the plan, update both sides if needed, and re-delegate.
 ## 5. Pull request
 
 - Commit with Conventional Commits (e.g. `feat: sign in with email`).
+- **PR size check.** Before the push gate, check added application lines (excluding
+  tests, docs, and lockfiles). If it exceeds ~400 lines, call it out at the push gate
+  and offer to split standalone scaffolding (such as a new `AGENTS.md` or unrelated
+  refactors) into its own PR so review stays fast and focused.
 - **Push gate.** Pushing writes to GitHub and may deploy, so ask first. Show the human
   the branch, `git diff --stat <base>...HEAD`, the check results, each acceptance
   criterion's status, what the push deploys (from the project config, e.g. "a push to

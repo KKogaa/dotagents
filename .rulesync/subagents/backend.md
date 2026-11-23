@@ -47,7 +47,21 @@ the same time.
   environment; add new variables to `.env.example` with a comment.
 - **Keep logic out of the transport layer**: follow the project's architecture
   (for example domain and application code separate from HTTP and database
-  adapters) so it can be tested without a server.
+  adapters) so it can be tested without a server. Keep infrastructure config
+  (storage prefixes, bucket/container names, broker settings) inside adapters, not
+  application handlers.
+- **Async consumers, background jobs & concurrency**:
+  - Non-HTTP worker threads (queue/topic consumers, schedulers, async callbacks) have
+    no HTTP request context: activate a transaction or request context
+    (`@Transactional` / `@ActivateRequestContext` or framework equivalent) before
+    touching ORM/Panache repositories.
+  - Acquire a transactional lock, unique constraint, or atomic claim *before*
+    irreversible external side effects (uploads, notifications, payments); never rely
+    on separate non-atomic `SELECT` checks that race across pods or retries.
+- **Sensitive data & error logging**: mask PII (including nested arrays and objects) in
+  payload logs; override `toString()` on DTOs/records carrying tokens, secrets, or
+  signed URLs (such as SAS URLs); never drop the exception/stack trace when logging
+  caught failures.
 - Watch for N+1 queries, unbounded lists (paginate), and missing indexes on new
   lookups.
 
