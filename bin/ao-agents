@@ -349,22 +349,27 @@ def render(args):
             lines.append(f"  {DIM}no subagents yet{RESET}")
         for r in rows:
             indent = "  " * r["depth"]
-            bg = f" {DIM}(bg){RESET}" if r["background"] else ""
             if r["finished"]:
-                lines.append(f"{indent}{GREEN}✓{RESET} {r['type']:<17} {r['desc'][:55]:<55} "
-                             f"{DIM}{fmt_dur(r['end'] - r['start'])}{RESET}{bg}")
+                lines.append(f"{indent}{GREEN}✓{RESET} {r['type']:<17} {r['desc'][:48]:<48} "
+                             f"{GREEN}[done]{RESET} {DIM}{fmt_dur(r['end'] - r['start'])}{RESET}")
                 continue
             idle = now - r["end"]
-            mark, col = (f"{YELLOW}●{RESET}", YELLOW) if idle < 300 else (f"{RED}?{RESET}", RED)
-            lines.append(f"{indent}{mark} {col}{r['type']:<17}{RESET} {r['desc'][:55]:<55} "
-                         f"{fmt_dur(now - r['start'])}{bg}")
+            if idle >= 300:
+                mark, col, tag = f"{RED}?{RESET}", RED, f"{RED}[stuck? {fmt_dur(idle)}]{RESET}"
+            elif idle >= 30:
+                mark, col, tag = f"{YELLOW}●{RESET}", YELLOW, f"{YELLOW}[idle {fmt_dur(idle)}]{RESET}"
+            else:
+                mark, col, tag = f"{YELLOW}●{RESET}", YELLOW, f"{YELLOW}[running]{RESET}"
+            lines.append(f"{indent}{mark} {col}{r['type']:<17}{RESET} {r['desc'][:48]:<48} "
+                         f"{tag} {DIM}{fmt_dur(now - r['start'])}{RESET}")
             tool = last_tool_agy(r["jsonl"]) if r["harness"] == "agy" else last_tool_claude(r["jsonl"])
-            quiet = f", quiet {fmt_dur(idle)}" if idle > 30 else ""
-            if tool or quiet:
-                lines.append(f"{indent}    {CYAN}↳ {tool}{RESET}{DIM}{quiet}{RESET}")
+            if tool:
+                lines.append(f"{indent}    {CYAN}↳ {tool}{RESET}")
         lines.append("")
-    lines.append(f"{DIM}✓ done  {YELLOW}●{RESET}{DIM} running  {RED}?{RESET}{DIM} no output "
-                 f"for 5m+ (stuck or waiting){RESET}")
+    lines.append(f"{GREEN}✓ [done]{RESET}{DIM} finished   "
+                 f"{YELLOW}● [running]{RESET}{DIM} active   "
+                 f"{YELLOW}● [idle]{RESET}{DIM} waiting/thinking (30s+)   "
+                 f"{RED}? [stuck?]{RESET}{DIM} quiet 5m+{RESET}")
     return "\n".join(lines)
 
 

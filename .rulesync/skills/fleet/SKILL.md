@@ -124,11 +124,11 @@ the agent you were given; don't spawn yourself again.
   the workspace path into each project's rules; still name any file the task depends on
   in the prompt.
 - `--base` defaults to the project's configured base branch; pass it only to override.
-- `developer` runs `reviewer` as the single verifier gate before moving a story to Done
-  (delegating to CIX's `cix-pr-reviewer` in non-personal projects, or the built-in
-  generic review in personal projects), so the orchestrator doesn't need to spawn a
-  duplicate reviewer session after every worker PR. Spawn a standalone reviewer session
-  only for an external PR or an on-demand review:
+- `developer` runs the single verification gate before moving a story to Done
+  (invoking CIX's `cix-pr-reviewer` directly in non-personal projects, or `reviewer`
+  in personal projects), so the orchestrator doesn't need to spawn a duplicate reviewer
+  session after every worker PR. Spawn a standalone reviewer session only for an
+  external PR or an on-demand review:
   `ao spawn --project <project-id> --claim-pr <pr> --review $(~/.aiglobal/bin/fleet-route pick reviewer --ao-flags) --name "<repo>: review #<pr>" --prompt "Use the reviewer agent to review PR #<pr>."`
 - Follow up with `ao session ls`, `ao session history <id>` and `ao send --session <id> --message "..."`.
   Relay the worker's questions to the human; never answer a plan or approval gate on

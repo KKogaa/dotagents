@@ -36,7 +36,7 @@ const MARKER = ".managed-by-dotagents";
 // Which fleet agents each agent may start (agy's `agents` allowlist). Kept explicit:
 // matching names in the instructions would let the read-only reviewer start developer.
 const SUBAGENTS = {
-  developer: ["backend", "frontend", "e2e", "reviewer"],
+  developer: ["backend", "frontend", "e2e", "reviewer", "cix-pr-reviewer"],
   reviewer: ["cix-pr-reviewer", "review-verifier"],
   "product-owner": ["product-explorer"],
   "tech-lead": ["product-explorer"],

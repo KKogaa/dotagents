@@ -112,23 +112,23 @@ function fleetBlock(kind, workspace) {
     lines.push(
       "This session is part of the dotagents software factory. Route the task with the `fleet` skill:",
       "implementing a story or task goes to the `developer` agent (it delegates to `backend` / `frontend`",
-      "and runs `reviewer` as the single verifier gate to Done), reviewing a PR to the `reviewer` agent",
-      "(delegates to CIX's `cix-pr-reviewer` in non-personal projects; built-in generic reviewer in",
-      "personal projects), an idea or backlog to `product-owner`, project setup or an ADR to `tech-lead`.",
-      "In non-personal projects, never merge a PR into `develop` (even after `reviewer` passes) — leave",
-      "merging to the human. If the prompt names an agent, use that one. Don't switch to another workflow.",
-      "Keep the human in the loop at every plan and approval gate.",
+      "and runs `cix-pr-reviewer` directly in non-personal projects or `reviewer` in personal projects",
+      "as the single verifier gate to Done), standalone PR reviews to `reviewer`, an idea or backlog to",
+      "`product-owner`, project setup or an ADR to `tech-lead`. In non-personal projects, never merge a",
+      "PR into `develop` (even after review passes) — leave merging to the human. If the prompt names an",
+      "agent, use that one. Don't switch to another workflow. Keep the human in the loop at every plan",
+      "and approval gate.",
     );
   } else {
     lines.push(
       "You coordinate the dotagents software factory. Use the `fleet` skill: split the work into one task",
       "per repo, spawn one worker per repo with `ao spawn --project <id> --prompt \"Use the <agent> agent to ...\"`",
       "carrying the full handoff (goal, acceptance criteria, findings, decisions, the shared contract for",
-      "cross-repo changes). `developer` runs `reviewer` as the single verifier gate to Done (CIX's",
-      "`cix-pr-reviewer` in non-personal projects, generic reviewer in personal projects), so only spawn",
-      "a standalone `reviewer` session for external or on-demand PR reviews. In non-personal projects,",
-      "never merge a PR into `develop` even after `reviewer` passes — leave merging to the human. Relay",
-      "workers' questions to the human; never answer a plan or approval gate on their behalf.",
+      "cross-repo changes). `developer` runs the single verifier gate to Done (`cix-pr-reviewer` directly",
+      "in non-personal projects, `reviewer` in personal projects), so only spawn a standalone `reviewer`",
+      "session for external or on-demand PR reviews. In non-personal projects, never merge a PR into",
+      "`develop` even after review passes — leave merging to the human. Relay workers' questions to the",
+      "human; never answer a plan or approval gate on their behalf.",
     );
   }
   if (workspace) {

@@ -202,21 +202,24 @@ the plan, update both sides if needed, and re-delegate.
   then stop and ask. BLOCKED or INCONCLUSIVE: report it; don't retry blindly.
 - Wait for CI (`gh pr checks <n> --watch`). Fix a failure once; if it fails again,
   stop and ask the human.
-- **Single verification gate (`reviewer`)**: run the **reviewer** subagent on the PR
-  (Claude Code: the Agent tool with `subagent_type: reviewer`; agy: `invoke_subagent`
-  with `TypeName: reviewer`; prompt "Review PR #<n> in <owner/repo>. Report in chat
-  only; don't publish."). `reviewer` is the **single verifier** required to move the
-  story to Done: for non-personal projects it delegates to CIX's `inic-pr-review`
-  (`cix-pr-reviewer` + `cix-pr-verifier`), and for personal projects (`KKogaa` /
-  `/mnt/Laplace/projects/personal/`) it runs the built-in generic review with
-  `review-verifier`.
+- **Single verification gate**: run the review subagent on the PR ("Review PR #<n> in
+  <owner/repo>. Report in chat only; don't publish."):
+  - **Non-personal projects** (e.g. `CIX-SOFTWARE-LABS` / `cix.md` profile): invoke
+    **`cix-pr-reviewer` directly** (Claude Code: `subagent_type:
+    inic-pr-review:cix-pr-reviewer`; agy: `invoke_subagent` with `TypeName:
+    cix-pr-reviewer`) — skip the `reviewer` wrapper hop. `cix-pr-reviewer` runs
+    `cix-pr-verifier` internally.
+  - **Personal projects** (`KKogaa` / `/mnt/Laplace/projects/personal/`): invoke the
+    **`reviewer`** subagent (Claude Code: `subagent_type: reviewer`; agy: `TypeName:
+    reviewer`), which runs the built-in generic review with `review-verifier`.
   Fix every confirmed **[Bloqueante]**/**[Blocker]** and **[Importante]**/**[Important]**
-  (or answer it in the PR if you disagree, with the reason), push, and ask `reviewer` to
-  re-review once.
-- **Move to Done**: only when `reviewer` passes (**Listo para fusionar** / **Ready to
-  merge**), all confirmed findings are resolved, and CI is green is the task complete:
+  (or answer it in the PR if you disagree, with the reason), push, and ask the same
+  review agent to re-review once.
+- **Move to Done**: only when the review passes (**Listo para fusionar** / **Listo para
+  merge** / **Ready to merge**), all confirmed findings are resolved, and CI is green is
+  the task complete:
   1. Move the GitHub Project board card to Done (`~/.aiglobal/bin/board move <issue> done`,
-     when the repo has a Project and `reviewer` hasn't moved it already).
+     when the repo has a Project and it hasn't been moved already).
   2. When running inside an Agent Orchestrator (`ao`) worker session, submit the
      completion report (`ao report --done --pr-created <pr-url> --pr-reviewed <pr-url>
      --note "<verdict, checks, and any manual follow-ups>"`). Keep the session alive so
