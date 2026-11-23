@@ -97,6 +97,10 @@ Read the code the story touches, then write a short plan (to yourself, or to the
 human if they're watching). When the prompt already gives findings (files and patterns
 to reuse, root cause, environment facts, decisions made), treat them as given: read only
 what's missing, and recheck a given fact only if the code contradicts it.
+For bug fixes or multi-service behavior changes, trace the observed vs. expected
+timeline directly against the actual code in every involved repo **before** proposing a
+new database column, migration, or cross-repo contract — confirm whether an existing
+column or sibling repo's guard already defines the invariant.
 The plan:
 - what changes, file by file or module by module: this list is the scope. A change
   that needs another repo isn't yours to make: write down the contract it needs (event
@@ -160,7 +164,10 @@ the plan, update both sides if needed, and re-delegate.
   run the app if a criterion is about behaviour you can exercise (start the dev
   server, call the endpoint, load the page).
 - Read the whole diff yourself: leftovers (debug logs, commented-out code, TODOs
-  without an issue), secrets, unrelated changes, missing tests.
+  without an issue), secrets, real PII/incident data, unrelated changes, missing tests.
+  Never copy real phone numbers, document numbers, emails, or real lead/user IDs from
+  prompts, tickets, or incident logs into tests, comments, commit messages, or PR
+  descriptions — always substitute synthetic fixtures.
 - Fix problems in **one round**: send every failure and finding back to the right
   subagent at once, with the exact failure, or fix small things yourself. If something
   still fails after that round, stop and ask the human; don't start another round on
@@ -222,16 +229,24 @@ the plan, update both sides if needed, and re-delegate.
     reviewer`), which runs the built-in generic review with `review-verifier`, with the
     same publish instruction.
   - **Fallback**: if the review subagent reports its findings in chat without posting to
-    GitHub (e.g. because its tool permissions are read-only), publish the review body and
-    inline finding comments on the PR yourself via `gh api -X POST
-    repos/<owner>/<repo>/pulls/<n>/reviews` with `"event": "COMMENT"` so every finding is
-    recorded on the PR before fixes start.
+    GitHub (e.g. because its tool permissions are read-only), publish both on the PR
+    yourself so the PR has the full review record before fixes start:
+    1. Post (or update if a comment starting with `<!-- pr-review:entendimiento -->`
+       already exists) the `## Qué entendí y qué revisé` section as a PR comment via
+       `gh pr comment` / `gh api` (for `cix-pr-reviewer`, start with
+       `<!-- pr-review:entendimiento -->` and end with `<sub>cix-pr-reviewer
+       v<version></sub>`).
+    2. Publish the review body and inline finding comments via `gh api -X POST
+       repos/<owner>/<repo>/pulls/<n>/reviews` with `"event": "COMMENT"`.
   - **Fix round & second review (re-review)**: fix every confirmed
     **[Bloqueante]**/**[Blocker]** and **[Importante]**/**[Important]** (or reply on its
     PR thread explaining why if you disagree), push, wait for CI, and ask the same review
     agent to re-review once and publish its re-review (replying on each previous finding
     thread with **Corregido**/**Fixed**, **Respondido**/**Answered**, or
-    **Pendiente**/**Open**).
+    **Pendiente**/**Open**). If a fix requires squashing/force-pushing (for example to
+    scrub leaked PII from commit history), do that **before** invoking the second review
+    so the re-review anchors on the final commit SHA instead of forcing a full re-review
+    on a rewritten history.
   - **Resolve fixed threads after the second review**: after the re-review completes,
     resolve every PR review thread whose finding was confirmed **Corregido**/**Fixed**
     (or **Respondido**/**Answered** with no open blocker) using GitHub GraphQL

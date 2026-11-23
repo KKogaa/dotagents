@@ -81,8 +81,11 @@ write them from the request and confirm them before handing off.
 Subagents and new sessions don't see this conversation. A good handoff carries:
 
 - the goal and the acceptance criteria (what "done" means);
-- what you already found: the files and patterns to reuse, the root cause, data or
-  environment facts, and the decisions the human has made;
+- what you already found: the files and patterns to reuse, the root cause (for
+  multi-service bugs, trace the observed vs. expected timeline against actual code in
+  every involved repo before proposing a new column or cross-repo contract), data or
+  environment facts (scrub real PII/phone numbers from incident traces or flag them as
+  never-commit), and the decisions the human has made;
 - open decisions, with your recommendation, for the agent to confirm with the human;
 - the repo(s), base branch, ticket id, and paths to project config the agent might not
   find on its own (see AO below);
