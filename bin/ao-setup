@@ -19,7 +19,7 @@
 //     workspace, the block also names the workspace folder, because ao worktrees
 //     live outside it and its AGENTS.md / .claude config isn't found otherwise.
 //
-// Options: --agent <harness>  --base <auto|keep|branch>  --dry-run  --json
+// Options: --agent <harness>  --base <auto|keep|branch>  --permission <mode|keep>  --dry-run  --json
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -30,7 +30,7 @@ const END = "<!-- /dotagents:fleet -->";
 
 const USAGE = `Usage:
   ao-setup check [PATH...] [--json]
-  ao-setup apply [PATH...] [--agent claude-code] [--base auto|keep|<branch>] [--dry-run]
+  ao-setup apply [PATH...] [--agent claude-code] [--base auto|keep|<branch>] [--permission auto|keep|<mode>] [--dry-run]
 
 PATH is a git repo or a folder of git repos (default: current directory).`;
 
@@ -178,11 +178,13 @@ function plan(repos, opts) {
   const byPath = projectsByPath();
   const agent = opts.agent || "claude-code";
   const baseOpt = opts.base || "auto";
+  const permOpt = opts.permission || "auto";
 
   return repos.map(({ repo, workspace }) => {
     const project = byPath.get(fs.realpathSync(repo)) || null;
     const cfg = project?.config || {};
     const base = baseOpt === "keep" ? null : baseOpt === "auto" ? autoBase(repo) : baseOpt;
+    const permission = permOpt === "keep" ? null : permOpt;
     const workerRules = mergeRules(cfg.agentRules, fleetBlock("worker", workspace));
     const orchRules = mergeRules(cfg.orchestratorRules, fleetBlock("orchestrator", workspace));
     const changes = [];
@@ -190,12 +192,13 @@ function plan(repos, opts) {
     if (!project || cfg.worker?.agent !== agent) changes.push(`worker agent -> ${agent}`);
     if (!project || cfg.orchestrator?.agent !== agent) changes.push(`orchestrator agent -> ${agent}`);
     if (base && (cfg.defaultBranch || project?.defaultBranch) !== base) changes.push(`base -> ${base}`);
+    if (permission && cfg.agentConfig?.permissions !== permission) changes.push(`permission -> ${permission}`);
     if ((cfg.agentRules || "") !== workerRules) changes.push("worker fleet rules");
     if ((cfg.orchestratorRules || "") !== orchRules) changes.push("orchestrator fleet rules");
     return {
       repo, workspace, id: project?.id || null, registered: !!project,
       base: cfg.defaultBranch || project?.defaultBranch || null, wantBase: base,
-      agent, workerRules, orchRules, changes,
+      permission, agent, workerRules, orchRules, changes,
     };
   });
 }
@@ -233,6 +236,7 @@ function apply(items, opts) {
       "--worker-agent", it.agent, "--orchestrator-agent", it.agent,
       "--agent-rules", it.workerRules, "--orchestrator-rules", it.orchRules];
     if (it.wantBase) args.push("--default-branch", it.wantBase);
+    if (it.permission) args.push("--permission", it.permission);
     run("ao", args);
   }
 }

@@ -30,7 +30,9 @@ explicitly confirms.
 
 First check whether the repository is a **personal project** (matches
 `fleet/profiles/personal.md`: under `/mnt/Laplace/projects/personal/`, or its
-`origin` remote is owned by `KKogaa`).
+`origin` remote is owned by `KKogaa`). If the caller's prompt already names
+`<owner>/<repo>` (e.g. `CIX-SOFTWARE-LABS/...` or `KKogaa/...`), trust that
+owner and route immediately without running `git remote get-url origin`.
 
 - **Non-personal projects (e.g. `CIX-SOFTWARE-LABS` / `/mnt/Laplace/projects/cwap/`):**
   Delegate the entire review or re-review to CIX Software Labs' **`inic-pr-review`**

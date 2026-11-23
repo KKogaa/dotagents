@@ -372,6 +372,23 @@ function doctor(json = false) {
     ok(`agy ${agyv}`);
     const chk = spawnSync(path.join(ROOT, "bin", "agy-plugin"), ["check"], { encoding: "utf8" });
     chk.status === 0 ? ok("agy plugin dotagents is up to date") : fail("agy plugin dotagents is out of date: bin/dotagents setup (or bin/agy-plugin build)");
+    if (aov) {
+      const acpSettingsPath = path.join(os.homedir(), ".gemini", "antigravity-acp", "settings.json");
+      try {
+        const acpSettings = readJson(acpSettingsPath);
+        const nonWs = acpSettings?.allowNonWorkspaceAccess === true;
+        const autoProc = ["always-proceed", "turbo"].includes(acpSettings?.toolPermission);
+        if (!acpSettings) {
+          warn(`~/.gemini/antigravity-acp/settings.json missing: agy subagents in ao will time out on commands/reads without allowNonWorkspaceAccess:true and toolPermission:"always-proceed"`);
+        } else if (!nonWs || !autoProc) {
+          warn(`~/.gemini/antigravity-acp/settings.json needs allowNonWorkspaceAccess:true and toolPermission:"always-proceed" so agy subagents in ao don't time out`);
+        } else {
+          ok("agy ACP settings.json configured for subagents");
+        }
+      } catch (e) {
+        warn(`~/.gemini/antigravity-acp/settings.json is invalid JSON: ${e.message}`);
+      }
+    }
   }
   try {
     JSON.parse(fs.readFileSync(path.join(ROOT, "fleet-models.json"), "utf8"));

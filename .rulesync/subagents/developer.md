@@ -86,6 +86,10 @@ from the issue alone and skip the card moves.
   (`docs/product/...`) and ADRs (`docs/adr/`), and the comments, including the tech
   lead's technical notes.
 - Start from an up-to-date default branch and create the branch.
+- **Continuing an existing PR in a worktree:** if the PR's branch is already checked
+  out in another local worktree, don't try to check out that branch name — create a
+  new local branch at the PR's verified full head SHA (e.g. `ao/<slug>/<branch>`) and
+  push updates later with `git push origin HEAD:<pr-branch>` once confirmed.
 
 ## 2. Plan
 
