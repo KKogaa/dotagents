@@ -13,7 +13,7 @@ description: >-
   "turn this into tasks"), or to add a new epic to an existing product.
 claudecode:
   tools: Agent, Read, Write, Edit, Grep, Glob, Bash, WebSearch, WebFetch, AskUserQuestion
-  model: inherit
+  model: opus
 opencode:
   mode: all
 ---

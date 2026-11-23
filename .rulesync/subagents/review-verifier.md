@@ -3,15 +3,17 @@ targets:
   - '*'
 name: review-verifier
 description: >-
-  Read-only verifier for the reviewer agent. Gets candidate review findings
-  written by someone else and tries to prove each one wrong by reading the code;
-  returns CONFIRMED, REFUTED or UNVERIFIABLE with evidence as JSON, and may lower
-  a severity but never raises one or adds findings. Run only by the reviewer.
+  Read-only verifier for the reviewer agent (used in personal projects;
+  non-personal projects use CIX's cix-pr-verifier via cix-pr-reviewer). Gets
+  candidate review findings written by someone else and tries to prove each one
+  wrong by reading the code; returns CONFIRMED, REFUTED or UNVERIFIABLE with
+  evidence as JSON, and may lower a severity but never raises one or adds
+  findings. Run only by the reviewer.
 claudecode:
   tools: Read, Grep, Glob, Bash
-  model: inherit
+  model: opus
 opencode:
-  mode: subagent
+  mode: all
 ---
 # Review verifier
 

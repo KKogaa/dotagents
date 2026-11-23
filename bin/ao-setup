@@ -1,0 +1,249 @@
+#!/usr/bin/env node
+// ao-setup: register repos in Agent Orchestrator (ao) so its sessions work as the
+// dotagents software factory. Idempotent: every step checks first and only changes
+// what's missing or different.
+//
+//   ao-setup check [PATH...] [--json]      read-only report
+//   ao-setup apply [PATH...] [options]     register and configure
+//
+// PATH (default: the current directory) is a git repo, or a workspace folder whose
+// direct children are git repos (each child becomes its own ao project).
+//
+// For each repo, apply:
+//   - registers it with `ao project add` if no ao project points at it;
+//   - sets the worker and orchestrator harness (--agent, default claude-code);
+//   - sets the base branch for new worktrees (--base: "auto" picks develop when
+//     origin/develop exists and otherwise leaves ao's default; "keep" changes nothing);
+//   - writes the fleet routing block into the project's worker and orchestrator
+//     standing rules, keeping any other rules already there. For a repo in a
+//     workspace, the block also names the workspace folder, because ao worktrees
+//     live outside it and its AGENTS.md / .claude config isn't found otherwise.
+//
+// Options: --agent <harness>  --base <auto|keep|branch>  --dry-run  --json
+
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+
+const START = "<!-- dotagents:fleet (managed by ao-setup) -->";
+const END = "<!-- /dotagents:fleet -->";
+
+const USAGE = `Usage:
+  ao-setup check [PATH...] [--json]
+  ao-setup apply [PATH...] [--agent claude-code] [--base auto|keep|<branch>] [--dry-run]
+
+PATH is a git repo or a folder of git repos (default: current directory).`;
+
+function die(msg) {
+  console.error(`ao-setup: ${msg}`);
+  process.exit(1);
+}
+
+function parseArgs(argv) {
+  const pos = [];
+  const opts = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (!a.startsWith("--")) pos.push(a);
+    else if (["--json", "--dry-run", "--help"].includes(a)) opts[a.slice(2)] = true;
+    else if (i + 1 < argv.length) opts[a.slice(2)] = argv[++i];
+    else die(`${a} needs a value`);
+  }
+  return { pos, opts };
+}
+
+function run(cmd, args, { allowFail = false } = {}) {
+  const r = spawnSync(cmd, args, { encoding: "utf8" });
+  if (r.error) {
+    if (allowFail) return null;
+    die(`${cmd} not found: ${r.error.message}`);
+  }
+  if (r.status !== 0) {
+    if (allowFail) return null;
+    die(`${cmd} ${args.join(" ")} failed:\n${r.stderr || r.stdout}`);
+  }
+  return r.stdout;
+}
+
+function aoJson(args) {
+  const out = run("ao", [...args, "--json"]);
+  try {
+    return JSON.parse(out);
+  } catch {
+    die(`unexpected output from ao ${args.join(" ")}`);
+  }
+}
+
+function isRepoRoot(dir) {
+  const top = run("git", ["-C", dir, "rev-parse", "--show-toplevel"], { allowFail: true });
+  return top !== null && fs.realpathSync(top.trim()) === fs.realpathSync(dir);
+}
+
+/** [{ repo, workspace }] for each PATH: the repo itself, or the workspace's child repos. */
+function findRepos(paths) {
+  const repos = [];
+  for (const p of paths.length ? paths : ["."]) {
+    const dir = path.resolve(p);
+    if (!fs.existsSync(dir)) die(`${dir} does not exist`);
+    if (isRepoRoot(dir)) {
+      const parent = path.dirname(dir);
+      const siblings = fs.readdirSync(parent).filter((n) => {
+        if (n.startsWith(".")) return false;
+        const child = path.join(parent, n);
+        return child !== dir && fs.existsSync(path.join(child, ".git"));
+      });
+      // A repo next to other repos in a folder that isn't a repo is part of a workspace.
+      repos.push({ repo: dir, workspace: siblings.length && !isRepoRoot(parent) ? parent : null });
+      continue;
+    }
+    const children = fs.readdirSync(dir)
+      .filter((n) => !n.startsWith("."))
+      .map((n) => path.join(dir, n))
+      .filter((c) => fs.statSync(c).isDirectory() && fs.existsSync(path.join(c, ".git")) && isRepoRoot(c));
+    if (!children.length) die(`${dir} is neither a git repo nor a folder of git repos`);
+    for (const c of children.sort()) repos.push({ repo: c, workspace: dir });
+  }
+  return repos;
+}
+
+function fleetBlock(kind, workspace) {
+  const lines = [START];
+  if (kind === "worker") {
+    lines.push(
+      "This session is part of the dotagents software factory. Route the task with the `fleet` skill:",
+      "implementing a story or task goes to the `developer` agent (it delegates to `backend` / `frontend`",
+      "and runs `reviewer` as the single verifier gate to Done), reviewing a PR to the `reviewer` agent",
+      "(delegates to CIX's `cix-pr-reviewer` in non-personal projects; built-in generic reviewer in",
+      "personal projects), an idea or backlog to `product-owner`, project setup or an ADR to `tech-lead`.",
+      "If the prompt names an agent, use that one. Don't switch to another workflow. Keep the human in",
+      "the loop at every plan and approval gate.",
+    );
+  } else {
+    lines.push(
+      "You coordinate the dotagents software factory. Use the `fleet` skill: split the work into one task",
+      "per repo, spawn one worker per repo with `ao spawn --project <id> --prompt \"Use the <agent> agent to ...\"`",
+      "carrying the full handoff (goal, acceptance criteria, findings, decisions, the shared contract for",
+      "cross-repo changes). `developer` runs `reviewer` as the single verifier gate to Done (CIX's",
+      "`cix-pr-reviewer` in non-personal projects, generic reviewer in personal projects), so only spawn",
+      "a standalone `reviewer` session for external or on-demand PR reviews. Relay workers' questions to",
+      "the human; never answer a plan or approval gate on their behalf.",
+    );
+  }
+  if (workspace) {
+    lines.push(
+      "",
+      `This repo belongs to the workspace at ${workspace}. ao worktrees live outside that folder, so read`,
+      `${workspace}/AGENTS.md, ${workspace}/CLAUDE.md and ${workspace}/.claude/*.md (for example fleet.md)`,
+      "if they exist, and treat its sibling repos as the other services in this system.",
+    );
+  }
+  lines.push(END);
+  return lines.join("\n");
+}
+
+/** Existing rules with the managed block replaced (or appended). */
+function mergeRules(existing, block) {
+  const text = existing || "";
+  const s = text.indexOf(START);
+  const e = text.indexOf(END);
+  if (s !== -1 && e > s) return (text.slice(0, s) + block + text.slice(e + END.length)).trim();
+  return text.trim() ? `${text.trim()}\n\n${block}` : block;
+}
+
+function autoBase(repo) {
+  const has = run("git", ["-C", repo, "rev-parse", "--verify", "-q", "refs/remotes/origin/develop"],
+    { allowFail: true });
+  return has !== null ? "develop" : null;
+}
+
+/** Registered ao projects keyed by the real path of their repo (`ao project ls` has no paths). */
+function projectsByPath() {
+  const byPath = new Map();
+  for (const { id } of aoJson(["project", "ls"]).projects || []) {
+    const project = aoJson(["project", "get", id]).project;
+    try {
+      byPath.set(fs.realpathSync(project.path), project);
+    } catch {
+      /* project path gone */
+    }
+  }
+  return byPath;
+}
+
+function plan(repos, opts) {
+  const status = aoJson(["status"]);
+  if (status.state !== "ready") die(`the ao daemon is ${status.state || "not running"}: start the Agent Orchestrator app (ao start)`);
+  const byPath = projectsByPath();
+  const agent = opts.agent || "claude-code";
+  const baseOpt = opts.base || "auto";
+
+  return repos.map(({ repo, workspace }) => {
+    const project = byPath.get(fs.realpathSync(repo)) || null;
+    const cfg = project?.config || {};
+    const base = baseOpt === "keep" ? null : baseOpt === "auto" ? autoBase(repo) : baseOpt;
+    const workerRules = mergeRules(cfg.agentRules, fleetBlock("worker", workspace));
+    const orchRules = mergeRules(cfg.orchestratorRules, fleetBlock("orchestrator", workspace));
+    const changes = [];
+    if (!project) changes.push("register");
+    if (!project || cfg.worker?.agent !== agent) changes.push(`worker agent -> ${agent}`);
+    if (!project || cfg.orchestrator?.agent !== agent) changes.push(`orchestrator agent -> ${agent}`);
+    if (base && (cfg.defaultBranch || project?.defaultBranch) !== base) changes.push(`base -> ${base}`);
+    if ((cfg.agentRules || "") !== workerRules) changes.push("worker fleet rules");
+    if ((cfg.orchestratorRules || "") !== orchRules) changes.push("orchestrator fleet rules");
+    return {
+      repo, workspace, id: project?.id || null, registered: !!project,
+      base: cfg.defaultBranch || project?.defaultBranch || null, wantBase: base,
+      agent, workerRules, orchRules, changes,
+    };
+  });
+}
+
+function report(items, json) {
+  if (json) {
+    console.log(JSON.stringify(items.map(({ workerRules, orchRules, ...rest }) => rest), null, 2));
+    return;
+  }
+  for (const it of items) {
+    const name = it.id || path.basename(it.repo);
+    const state = it.changes.length ? `needs: ${it.changes.join(", ")}` : "ok";
+    console.log(`  ${it.changes.length ? "todo" : "ok  "}  ${name.padEnd(34)} ${state}`);
+  }
+  const todo = items.filter((i) => i.changes.length).length;
+  console.log(`\n${items.length} repo(s), ${todo} to change.`);
+}
+
+function apply(items, opts) {
+  for (const it of items) {
+    if (!it.changes.length) {
+      console.log(`  ok    ${it.id}`);
+      continue;
+    }
+    console.log(`  ${opts["dry-run"] ? "would" : "apply"} ${it.id || path.basename(it.repo)}: ${it.changes.join(", ")}`);
+    if (opts["dry-run"]) continue;
+    let id = it.id;
+    if (!it.registered) {
+      run("ao", ["project", "add", "--path", it.repo,
+        "--worker-agent", it.agent, "--orchestrator-agent", it.agent]);
+      id = projectsByPath().get(fs.realpathSync(it.repo))?.id;
+      if (!id) die(`registered ${it.repo}, but can't find its ao project id`);
+    }
+    const args = ["project", "set-config", id,
+      "--worker-agent", it.agent, "--orchestrator-agent", it.agent,
+      "--agent-rules", it.workerRules, "--orchestrator-rules", it.orchRules];
+    if (it.wantBase) args.push("--default-branch", it.wantBase);
+    run("ao", args);
+  }
+}
+
+const { pos, opts } = parseArgs(process.argv.slice(2));
+const cmd = pos.shift();
+if (!cmd || opts.help || !["check", "apply"].includes(cmd)) {
+  console.log(USAGE);
+  process.exit(cmd && !opts.help ? 1 : 0);
+}
+const items = plan(findRepos(pos), opts);
+if (cmd === "check") {
+  report(items, !!opts.json);
+  process.exit(items.some((i) => i.changes.length) ? 2 : 0);
+}
+apply(items, opts);

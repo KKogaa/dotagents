@@ -1,0 +1,301 @@
+#!/usr/bin/env node
+// fleet-route: pick the harness and model for a fleet role from fleet-models.json,
+// based on what's installed, signed in and under its usage limits.
+//
+//   fleet-route pick <role|agent> [--json | --ao-flags] [--skip h1,h2]
+//       First available candidate. --ao-flags prints `--harness X --model Y [--effort Z]`
+//       for `ao spawn`. Exit 3 when no candidate is available.
+//   fleet-route usage [--json]
+//       Claude Code tokens per model over the last 5h and 7d (from the session
+//       transcripts in ~/.claude/projects, ao workers included), and each harness's state.
+//   fleet-route mark <harness> exhausted [--for 2h] [--reason text]
+//   fleet-route mark <harness> ok
+//       Record that a harness hit its quota (for example an agy "quota" or "out of
+//       credits" error) so pick skips it until the time passes. agy has no usage CLI,
+//       so this is how its limit is tracked.
+//   fleet-route roles
+//
+// State lives in ~/.local/state/dotagents/fleet-route.json.
+
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const CONFIG = JSON.parse(fs.readFileSync(path.join(ROOT, "fleet-models.json"), "utf8"));
+const PROJECTS = path.join(os.homedir(), ".claude", "projects");
+const STATE = path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state"),
+  "dotagents", "fleet-route.json");
+const WINDOWS = { "5h": 5 * 3600e3, "7d": 7 * 86400e3 };
+
+function die(msg, code = 1) {
+  console.error(`fleet-route: ${msg}`);
+  process.exit(code);
+}
+
+function parseArgs(argv) {
+  const pos = [];
+  const opts = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (!a.startsWith("--")) pos.push(a);
+    else if (["--json", "--ao-flags", "--help"].includes(a)) opts[a.slice(2)] = true;
+    else opts[a.slice(2)] = argv[++i];
+  }
+  return { pos, opts };
+}
+
+function readState() {
+  try {
+    return JSON.parse(fs.readFileSync(STATE, "utf8"));
+  } catch {
+    return { marks: {} };
+  }
+}
+
+function writeState(state) {
+  fs.mkdirSync(path.dirname(STATE), { recursive: true });
+  fs.writeFileSync(STATE, JSON.stringify(state, null, 2) + "\n");
+}
+
+function parseDuration(s) {
+  const m = String(s || "5h").match(/^(\d+(?:\.\d+)?)([mhd])$/);
+  if (!m) die(`bad duration "${s}" (use e.g. 30m, 5h, 2d)`);
+  return Number(m[1]) * { m: 60e3, h: 3600e3, d: 86400e3 }[m[2]];
+}
+
+/** installed/authorized per harness, from `ao agent ls` (falls back to PATH checks). */
+function harnessReadiness() {
+  const ready = {};
+  const r = spawnSync("ao", ["agent", "ls"], { encoding: "utf8" });
+  if (r.status === 0) {
+    for (const line of r.stdout.split("\n").slice(1)) {
+      const cols = line.trim().split(/\s{2,}/);
+      if (cols.length >= 4) ready[cols[0]] = { installed: cols[2] === "installed", authorized: cols[3] === "authorized" };
+    }
+  }
+  for (const [h, bin] of [["claude-code", "claude"], ["agy", "agy"]]) {
+    if (!ready[h]) {
+      const found = spawnSync("sh", ["-c", `command -v ${bin}`]).status === 0;
+      ready[h] = { installed: found, authorized: found };
+    }
+  }
+  return ready;
+}
+
+function* jsonlFiles(dir, since) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) yield* jsonlFiles(p, since);
+    else if (e.name.endsWith(".jsonl")) {
+      try {
+        if (fs.statSync(p).mtimeMs >= since) yield p;
+      } catch {
+        /* vanished */
+      }
+    }
+  }
+}
+
+/** Claude Code token totals per window and model, deduplicated by message id. */
+function claudeUsage(now = Date.now()) {
+  const since = now - WINDOWS["7d"];
+  const seen = new Set();
+  const totals = {};
+  for (const w of Object.keys(WINDOWS)) totals[w] = { output_tokens: 0, input_tokens: 0, cache_read_tokens: 0, by_model: {} };
+  for (const file of jsonlFiles(PROJECTS, since)) {
+    let text;
+    try {
+      text = fs.readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    for (const line of text.split("\n")) {
+      if (!line.includes('"usage"')) continue;
+      let entry;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const msg = entry.message;
+      const usage = msg?.usage;
+      const ts = Date.parse(entry.timestamp);
+      if (!usage || !ts || ts < since) continue;
+      const key = msg.id || entry.uuid;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const model = msg.model || "unknown";
+      if (model === "<synthetic>") continue;
+      const input = (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
+      for (const [w, span] of Object.entries(WINDOWS)) {
+        if (ts < now - span) continue;
+        const t = totals[w];
+        t.output_tokens += usage.output_tokens || 0;
+        t.input_tokens += input;
+        t.cache_read_tokens += usage.cache_read_input_tokens || 0;
+        const m = (t.by_model[model] ||= { output_tokens: 0, input_tokens: 0 });
+        m.output_tokens += usage.output_tokens || 0;
+        m.input_tokens += input;
+      }
+    }
+  }
+  return totals;
+}
+
+/** Per-harness availability: readiness, manual marks, and calibrated limits. */
+function harnessStatus({ withUsage = true } = {}) {
+  const now = Date.now();
+  const ready = harnessReadiness();
+  const state = readState();
+  const usage = withUsage ? { "claude-code": claudeUsage(now) } : {};
+  const status = {};
+  for (const [h, cfg] of Object.entries(CONFIG.harnesses)) {
+    const s = { harness: h, ...(ready[h] || { installed: false, authorized: false }), available: true, reasons: [] };
+    if (!s.installed) (s.available = false, s.reasons.push("not installed"));
+    else if (!s.authorized) (s.available = false, s.reasons.push("not signed in"));
+    const mark = state.marks?.[h];
+    if (mark && Date.parse(mark.until) > now) {
+      s.available = false;
+      s.reasons.push(`marked exhausted until ${mark.until}${mark.reason ? ` (${mark.reason})` : ""}`);
+    }
+    if (usage[h]) {
+      s.usage = {};
+      for (const [w, lim] of Object.entries(cfg.limits || {})) {
+        const used = usage[h][w]?.output_tokens ?? 0;
+        const limit = lim?.output_tokens ?? null;
+        const ratio = limit ? used / limit : null;
+        s.usage[w] = { output_tokens: used, limit, ratio };
+        if (ratio !== null && ratio >= (cfg.threshold ?? 0.8)) {
+          s.available = false;
+          s.reasons.push(`${w} output at ${Math.round(ratio * 100)}% of its limit`);
+        }
+      }
+      s.windows = usage[h];
+      s.calibrated = Object.values(cfg.limits || {}).some((l) => l?.output_tokens);
+    }
+    status[h] = s;
+  }
+  return status;
+}
+
+/** Candidates outside `allowed` in fleet-models.json, as "role: harness model". */
+function disallowed() {
+  const allowed = CONFIG.allowed || {};
+  const matches = (h, m) => (allowed[h] || []).some((p) =>
+    new RegExp(`^${p.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`).test(m));
+  return Object.entries(CONFIG.roles).flatMap(([role, r]) =>
+    r.candidates.filter((c) => !matches(c.harness, c.model)).map((c) => `${role}: ${c.harness} ${c.model}`));
+}
+
+function roleFor(nameOrAgent) {
+  if (CONFIG.roles[nameOrAgent]) return [nameOrAgent, CONFIG.roles[nameOrAgent]];
+  const hit = Object.entries(CONFIG.roles).find(([, r]) => (r.agents || []).includes(nameOrAgent));
+  if (!hit) die(`unknown role or agent "${nameOrAgent}" (roles: ${Object.keys(CONFIG.roles).join(", ")})`);
+  return hit;
+}
+
+function pick(target, opts) {
+  const bad = disallowed();
+  if (bad.length) die(`fleet-models.json uses models outside "allowed": ${bad.join(", ")}`);
+  const [role, def] = roleFor(target);
+  const skip = new Set(String(opts.skip || "").split(",").filter(Boolean));
+  const status = harnessStatus();
+  const tried = [];
+  for (const c of def.candidates) {
+    const s = status[c.harness];
+    if (skip.has(c.harness)) {
+      tried.push({ ...c, skipped: "skipped by --skip" });
+      continue;
+    }
+    if (!s?.available) {
+      tried.push({ ...c, skipped: s ? s.reasons.join("; ") : "unknown harness" });
+      continue;
+    }
+    const flags = ["--harness", c.harness, "--model", c.model, ...(c.effort ? ["--effort", c.effort] : [])];
+    if (opts["ao-flags"]) console.log(flags.join(" "));
+    else if (opts.json) console.log(JSON.stringify({ role, ...c, aoFlags: flags, skipped: tried }, null, 2));
+    else {
+      console.log(`${role}: ${c.harness} ${c.model}${c.effort ? ` (effort ${c.effort})` : ""}`);
+      for (const t of tried) console.log(`  skipped ${t.harness} ${t.model}: ${t.skipped}`);
+    }
+    return;
+  }
+  if (opts.json) console.log(JSON.stringify({ role, available: false, skipped: tried }, null, 2));
+  else for (const t of tried) console.error(`  ${t.harness} ${t.model}: ${t.skipped}`);
+  die(`no harness available for ${role}`, 3);
+}
+
+function fmt(n) {
+  return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n);
+}
+
+function usageReport(json) {
+  const status = harnessStatus();
+  if (json) {
+    console.log(JSON.stringify(status, null, 2));
+    return;
+  }
+  for (const s of Object.values(status)) {
+    console.log(`${s.harness}: ${s.available ? "available" : "unavailable"}${s.reasons.length ? ` (${s.reasons.join("; ")})` : ""}`);
+    if (!s.windows) {
+      if (s.harness === "agy") console.log("  no usage CLI; tracked with `fleet-route mark agy exhausted` when it reports a quota error");
+      continue;
+    }
+    for (const [w, t] of Object.entries(s.windows)) {
+      const lim = s.usage?.[w];
+      const pct = lim?.ratio != null ? ` = ${Math.round(lim.ratio * 100)}% of ${fmt(lim.limit)}` : "";
+      console.log(`  last ${w}: ${fmt(t.output_tokens)} output${pct}, ${fmt(t.input_tokens)} input, ${fmt(t.cache_read_tokens)} cache reads`);
+      for (const [m, u] of Object.entries(t.by_model).sort((a, b) => b[1].output_tokens - a[1].output_tokens)) {
+        console.log(`    ${m.padEnd(28)} ${fmt(u.output_tokens).padStart(7)} output  ${fmt(u.input_tokens).padStart(7)} input`);
+      }
+    }
+    if (!s.calibrated) {
+      console.log("  limits not calibrated: compare with /usage in Claude Code and set harnesses.claude-code.limits in fleet-models.json");
+    }
+  }
+}
+
+function mark(harness, what, opts) {
+  if (!CONFIG.harnesses[harness]) die(`unknown harness "${harness}" (${Object.keys(CONFIG.harnesses).join(", ")})`);
+  const state = readState();
+  state.marks ||= {};
+  if (what === "ok") delete state.marks[harness];
+  else if (what === "exhausted") {
+    state.marks[harness] = {
+      until: new Date(Date.now() + parseDuration(opts.for)).toISOString(),
+      reason: opts.reason || null,
+      at: new Date().toISOString(),
+    };
+  } else die(`mark takes "exhausted" or "ok"`);
+  writeState(state);
+  console.log(what === "ok" ? `${harness}: cleared` : `${harness}: exhausted until ${state.marks[harness].until}`);
+}
+
+const { pos, opts } = parseArgs(process.argv.slice(2));
+const cmd = pos.shift();
+const commands = {
+  pick: () => pick(pos[0] || die("pick needs a role or agent name"), opts),
+  usage: () => usageReport(!!opts.json),
+  mark: () => mark(pos[0], pos[1], opts),
+  roles: () => {
+    for (const [name, r] of Object.entries(CONFIG.roles)) {
+      console.log(`${name.padEnd(10)} ${(r.agents || []).join(", ")}`);
+      for (const c of r.candidates) console.log(`  ${c.harness.padEnd(12)} ${c.model}${c.effort ? ` (effort ${c.effort})` : ""}`);
+    }
+  },
+};
+if (!commands[cmd] || opts.help) {
+  console.log(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 20)
+    .map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+  process.exit(cmd && !opts.help ? 1 : 0);
+}
+commands[cmd]();

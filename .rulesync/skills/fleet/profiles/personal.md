@@ -1,4 +1,4 @@
-# Ship profile: personal
+# Fleet profile: personal
 
 Applies to projects under `/mnt/Laplace/projects/personal/` and repos owned by `KKogaa`.
 

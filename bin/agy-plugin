@@ -1,0 +1,206 @@
+#!/usr/bin/env node
+// agy-plugin: install the dotagents fleet into Antigravity CLI (agy), which rulesync
+// doesn't target. Builds a native agy plugin from what rulesync generated for Claude
+// Code, validates it with `agy plugin validate --strict`, and installs it at
+// ~/.gemini/config/plugins/dotagents/ (global, so every agy session and ao agy worker
+// sees it).
+//
+//   agy-plugin build    build, validate and install (only touches that one folder)
+//   agy-plugin check    exit 0 if the installed plugin matches a fresh build, 1 if not
+//
+// Sources (run `rulesync generate` first; `bin/dotagents install|setup` do both):
+//   agents  ~/.claude/agents/<name>.md for each .rulesync/subagents/<name>.md
+//   skills  ~/.claude/skills/<name>/  for each .rulesync/skills/<name>/ (and .curated/)
+//   rules   ~/.claude/CLAUDE.md -> rules/AGENTS.md
+//
+// Conversion: every agent gets `model: inherit`, so it runs on the session's model (the
+// fleet only starts agy sessions on Gemini 4 Neon or Claude Opus 5.5; agy's `pro` and
+// `flash` tiers could pick something else). agy doesn't validate tool names, so a wrong name would silently drop a
+// tool: agents that write files get agy's full default toolset (no `tools` line);
+// read-only agents get only names proven in agy (read_file, run_command,
+// invoke_subagent, ask_question, search_web, read_url_content). Agents that can start
+// subagents get an explicit `agents` allowlist (SUBAGENTS below).
+
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const HOME = os.homedir();
+const CLAUDE = path.join(HOME, ".claude");
+const DEST = path.join(HOME, ".gemini", "config", "plugins", "dotagents");
+const MARKER = ".managed-by-dotagents";
+
+// Which fleet agents each agent may start (agy's `agents` allowlist). Kept explicit:
+// matching names in the instructions would let the read-only reviewer start developer.
+const SUBAGENTS = {
+  developer: ["backend", "frontend", "e2e", "reviewer"],
+  reviewer: ["cix-pr-reviewer", "review-verifier"],
+  "product-owner": ["product-explorer"],
+  "tech-lead": ["product-explorer"],
+};
+// External plugin agents (e.g. inic-pr-review) allowed in `agents:` alongside local fleet agents.
+const EXTERNAL_SUBAGENTS = new Set(["cix-pr-reviewer"]);
+const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+const READ_TOOL_MAP = {
+  Read: "read_file",
+  Grep: "run_command",
+  Glob: "run_command",
+  Bash: "run_command",
+  Agent: "invoke_subagent",
+  Task: "invoke_subagent",
+  AskUserQuestion: "ask_question",
+  WebSearch: "search_web",
+  WebFetch: "read_url_content",
+};
+
+function die(msg) {
+  console.error(`agy-plugin: ${msg}`);
+  process.exit(1);
+}
+
+/** Minimal frontmatter parser: top-level keys, quoted scalars, `>-` / `|` blocks. */
+function parseFrontmatter(text) {
+  const m = text.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!m) return { data: {}, body: text };
+  const lines = m[1].split("\n");
+  const data = {};
+  for (let i = 0; i < lines.length; i++) {
+    const kv = lines[i].match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (!kv) continue;
+    const [, key, raw] = kv;
+    if (/^[>|][-+]?$/.test(raw)) {
+      const block = [];
+      while (i + 1 < lines.length && (/^\s+/.test(lines[i + 1]) || lines[i + 1] === "")) {
+        block.push(lines[++i].trim());
+      }
+      data[key] = raw.startsWith(">") ? block.join(" ").replace(/\s+/g, " ").trim() : block.join("\n");
+    } else {
+      data[key] = raw.replace(/^(['"])(.*)\1$/, "$2");
+    }
+  }
+  return { data, body: m[2] };
+}
+
+const yamlStr = (s) => JSON.stringify(String(s));
+
+function localNames(dir, { files = false } = {}) {
+  const full = path.join(ROOT, ".rulesync", dir);
+  if (!fs.existsSync(full)) return [];
+  return fs.readdirSync(full)
+    .filter((n) => !n.startsWith("."))
+    .filter((n) => (files ? n.endsWith(".md") : fs.statSync(path.join(full, n)).isDirectory()))
+    .map((n) => n.replace(/\.md$/, ""));
+}
+
+function convertAgent(name, fleet) {
+  const src = path.join(CLAUDE, "agents", `${name}.md`);
+  if (!fs.existsSync(src)) die(`${src} missing: run rulesync generate first`);
+  const { data, body } = parseFrontmatter(fs.readFileSync(src, "utf8"));
+  const tools = String(data.tools || "").split(",").map((t) => t.trim()).filter(Boolean);
+  const out = ["---", `name: ${yamlStr(data.name || name)}`, `description: ${yamlStr(data.description || "")}`];
+  out.push("model: inherit");
+  if (tools.length && !tools.some((t) => WRITE_TOOLS.has(t))) {
+    const mapped = [...new Set(tools.map((t) => READ_TOOL_MAP[t]).filter(Boolean))];
+    out.push(`tools: [${mapped.map((t) => `'${t}'`).join(", ")}]`);
+  }
+  const allowed = (SUBAGENTS[name] || []).filter((a) => fleet.includes(a) || EXTERNAL_SUBAGENTS.has(a));
+  if ((tools.includes("Agent") || tools.includes("Task")) && allowed.length) {
+    out.push(`agents: [${allowed.map((a) => `'${a}'`).join(", ")}]`);
+  }
+  out.push("---", "");
+  return out.join("\n") + body.replace(/^\n+/, "");
+}
+
+function copyDir(from, to) {
+  fs.mkdirSync(to, { recursive: true });
+  for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+    const s = path.join(from, entry.name);
+    const d = path.join(to, entry.name);
+    if (entry.isDirectory()) copyDir(s, d);
+    else if (entry.isFile() || entry.isSymbolicLink()) fs.copyFileSync(fs.realpathSync(s), d);
+  }
+}
+
+function version() {
+  const r = spawnSync("git", ["-C", ROOT, "log", "-1", "--format=%cs"], { encoding: "utf8" });
+  const date = r.status === 0 ? r.stdout.trim() : new Date().toISOString().slice(0, 10);
+  const [y, m, d] = date.split("-").map(Number);
+  return `${y}.${m}.${d}`;
+}
+
+function build(dir) {
+  const fleet = localNames("subagents", { files: true });
+  if (!fleet.length) die("no agents in .rulesync/subagents");
+  fs.mkdirSync(path.join(dir, "agents"), { recursive: true });
+  for (const name of fleet) {
+    fs.writeFileSync(path.join(dir, "agents", `${name}.agent.md`), convertAgent(name, fleet));
+  }
+  const skills = [...localNames("skills"), ...localNames(path.join("skills", ".curated"))];
+  for (const name of [...new Set(skills)]) {
+    const src = path.join(CLAUDE, "skills", name);
+    if (!fs.existsSync(path.join(src, "SKILL.md"))) die(`${src}/SKILL.md missing: run rulesync generate first`);
+    copyDir(src, path.join(dir, "skills", name));
+  }
+  const rules = path.join(CLAUDE, "CLAUDE.md");
+  if (fs.existsSync(rules)) {
+    fs.mkdirSync(path.join(dir, "rules"), { recursive: true });
+    fs.copyFileSync(rules, path.join(dir, "rules", "AGENTS.md"));
+  }
+  fs.writeFileSync(path.join(dir, "plugin.json"), JSON.stringify({
+    name: "dotagents",
+    description: "The dotagents software factory: product-owner, tech-lead, developer (with backend and frontend), e2e, reviewer, the fleet skill with its profiles, and global rules. Generated by ~/.aiglobal/bin/agy-plugin; edit dotagents, not these files.",
+    version: version(),
+    author: { name: "dotagents" },
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(dir, MARKER), "Generated by ~/.aiglobal/bin/agy-plugin build. Do not edit.\n");
+  return { agents: fleet.length, skills: new Set(skills).size };
+}
+
+function validate(dir) {
+  const r = spawnSync("agy", ["plugin", "validate", dir, "--strict"], { encoding: "utf8" });
+  if (r.error) die("agy not found on PATH");
+  if (r.status !== 0) die(`agy plugin validate failed:\n${r.stdout}${r.stderr}`);
+}
+
+function snapshot(dir) {
+  const files = {};
+  const walk = (d, rel = "") => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      const r = path.join(rel, e.name);
+      if (e.isDirectory()) walk(p, r);
+      else files[r] = fs.readFileSync(p, "utf8");
+    }
+  };
+  if (fs.existsSync(dir)) walk(dir);
+  return JSON.stringify(Object.entries(files).sort());
+}
+
+const cmd = process.argv[2];
+if (!["build", "check"].includes(cmd)) {
+  console.log("Usage: agy-plugin build | check");
+  process.exit(cmd ? 1 : 0);
+}
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agy-plugin-"));
+const staged = path.join(tmp, "dotagents");
+try {
+  const counts = build(staged);
+  if (cmd === "check") {
+    const same = snapshot(staged) === snapshot(DEST);
+    console.log(same ? "agy plugin is up to date" : "agy plugin is out of date: bin/agy-plugin build");
+    process.exit(same ? 0 : 1);
+  }
+  validate(staged);
+  if (fs.existsSync(DEST) && !fs.existsSync(path.join(DEST, MARKER))) {
+    die(`${DEST} exists and wasn't created by agy-plugin; not replacing it`);
+  }
+  fs.rmSync(DEST, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(DEST), { recursive: true });
+  copyDir(staged, DEST);
+  console.log(`installed ${DEST} (${counts.agents} agents, ${counts.skills} skills, rules)`);
+} finally {
+  fs.rmSync(tmp, { recursive: true, force: true });
+}

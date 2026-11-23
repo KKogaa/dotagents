@@ -44,7 +44,11 @@ Setup:
   doctor                           Check tools, versions, installs and generated files.
                                    Changes nothing; exits 1 if anything is wrong.
   setup                            Fix what doctor can fix (pinned rulesync, ~/.aiglobal
-                                   link, external installs, generate), then run doctor.
+                                   link, external installs, generate, ao helpers on PATH),
+                                   then run doctor.
+
+Agent Orchestrator (ao): see bin/ao-setup (register repos for the fleet) and
+bin/ao-agents (live view of the agents running in each ao session).
 
 
 Options:
@@ -181,6 +185,8 @@ function syncGitignore(manifest) {
 function generate(opts) {
   if (opts["no-generate"]) return;
   run("rulesync", ["generate"]);
+  // rulesync has no Antigravity (agy) target: bin/agy-plugin builds the fleet into an agy plugin.
+  if (version("agy")) run(path.join(ROOT, "bin", "agy-plugin"), ["build"]);
 }
 
 function hasSkillSources() {
@@ -247,6 +253,7 @@ async function install(opts, update = false) {
 const REQ = JSON.parse(fs.readFileSync(path.join(ROOT, "requirements.json"), "utf8"));
 const AIGLOBAL = path.join(os.homedir(), ".aiglobal");
 const TOOL_CMDS = { claude: "claude", copilot: "copilot", opencode: "opencode" };
+const AO_TOOLS = ["ao-agents", "ao-setup", "fleet-route"];
 
 function version(cmd) {
   const r = spawnSync(cmd, ["--version"], { encoding: "utf8" });
@@ -296,7 +303,7 @@ function doctor(json = false) {
   else ok(`rulesync ${rs} (pinned ${REQ.rulesync})`);
 
   const ghv = version("gh");
-  if (!ghv) warn(`gh missing: needed for private sources, /ship, product-owner and tech-lead`);
+  if (!ghv) warn(`gh missing: needed for private sources, product-owner, tech-lead, developer and reviewer`);
   else if (!satisfies(ghv, REQ.gh)) warn(`gh ${ghv}, want ${REQ.gh}`);
   else {
     const auth = spawnSync("gh", ["auth", "status"], { encoding: "utf8" });
@@ -340,6 +347,40 @@ function doctor(json = false) {
       : fail(`agent ${a.name} from ${a.source} not installed: bin/dotagents install`);
   }
 
+  log("\nAgent Orchestrator (optional)");
+  const aov = version("ao");
+  if (!aov) say("skip", "ao not installed (skipped): the fleet then runs agents in the current session");
+  else {
+    satisfies(aov, REQ.ao) ? ok(`ao ${aov} (${REQ.ao})`) : warn(`ao ${aov}, want ${REQ.ao}`);
+    const st = spawnSync("ao", ["status", "--json"], { encoding: "utf8" });
+    let state = null;
+    try { state = JSON.parse(st.stdout).state; } catch { /* not running */ }
+    state === "ready" ? ok("ao daemon ready") : warn(`ao daemon ${state || "not running"}: open the Agent Orchestrator app (ao start)`);
+    for (const tool of AO_TOOLS) {
+      const onPath = spawnSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" }).stdout.trim();
+      onPath && fs.realpathSync(onPath) === fs.realpathSync(path.join(ROOT, "bin", tool))
+        ? ok(`${tool} on PATH`)
+        : warn(`${tool} not on PATH: bin/dotagents setup (links it into ~/.local/bin)`);
+    }
+    say("skip", "register repos for the fleet: bin/ao-setup check|apply <repo-or-workspace>");
+  }
+
+  log("\nAntigravity CLI (agy)");
+  const agyv = version("agy");
+  if (!agyv) say("skip", "agy not installed (skipped): fleet-route then uses Claude Code only");
+  else {
+    ok(`agy ${agyv}`);
+    const chk = spawnSync(path.join(ROOT, "bin", "agy-plugin"), ["check"], { encoding: "utf8" });
+    chk.status === 0 ? ok("agy plugin dotagents is up to date") : fail("agy plugin dotagents is out of date: bin/dotagents setup (or bin/agy-plugin build)");
+  }
+  try {
+    JSON.parse(fs.readFileSync(path.join(ROOT, "fleet-models.json"), "utf8"));
+    const pick = spawnSync(path.join(ROOT, "bin", "fleet-route"), ["pick", "plan"], { encoding: "utf8" });
+    pick.status === 0 ? ok(`fleet-route: ${pick.stdout.split("\n")[0]}`) : warn(`fleet-route has no harness for plan: ${(pick.stderr || pick.stdout).trim()}`);
+  } catch (e) {
+    fail(`fleet-models.json is invalid: ${e.message}`);
+  }
+
   log("\nGenerated files");
   if (rs) {
     const r = spawnSync("rulesync", ["generate", "--check"], { cwd: ROOT, encoding: "utf8" });
@@ -349,6 +390,26 @@ function doctor(json = false) {
   if (json) console.log(JSON.stringify({ ok: errors === 0, errors, warnings, results }, null, 2));
   else console.log(`\n${errors ? `${errors} problem(s)` : "All good"}${warnings ? `, ${warnings} warning(s)` : ""}.`);
   return errors;
+}
+
+// Puts the ao helpers on PATH when ao is installed. Never replaces a file that isn't ours.
+function linkAoTools() {
+  if (!version("ao")) return;
+  const binDir = path.join(os.homedir(), ".local", "bin");
+  fs.mkdirSync(binDir, { recursive: true });
+  for (const tool of AO_TOOLS) {
+    const target = path.join(ROOT, "bin", tool);
+    const link = path.join(binDir, tool);
+    let current = null;
+    try { current = fs.realpathSync(link); } catch { /* missing or dangling */ }
+    if (current === fs.realpathSync(target)) continue;
+    if (fs.existsSync(link) || fs.lstatSync(link, { throwIfNoEntry: false })) {
+      console.log(`left ${link} alone: it isn't a link to ${target}`);
+      continue;
+    }
+    fs.symlinkSync(target, link);
+    console.log(`linked ${link} -> ${target}`);
+  }
 }
 
 async function setup(opts) {
@@ -366,6 +427,7 @@ async function setup(opts) {
     console.log(`linked ~/.aiglobal -> ${ROOT}`);
   }
   await install(opts);
+  linkAoTools();
   console.log("");
   process.exit(doctor() ? 1 : 0);
 }

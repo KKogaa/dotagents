@@ -1,6 +1,6 @@
 # Work-specific config: used locally by rulesync, never published.
 .rulesync/rules/CLAUDE.md
-.rulesync/skills/ship/profiles/cix.md
+.rulesync/skills/fleet/profiles/cix.md
 
 # External skills installed by `rulesync install` (pinned in rulesync.lock)
 .rulesync/skills/.curated/

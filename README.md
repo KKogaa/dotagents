@@ -10,8 +10,8 @@ All sources live in `.rulesync/`:
 
 | Folder | Contents |
 |---|---|
-| `subagents/` | `product-owner` and `product-explorer` (idea → discovery → GitHub backlog), `tech-lead` (decisions, repo, walking skeleton, CI), `developer` with its `frontend` and `backend` subagents (story → PR), `reviewer` with its `review-verifier` (verified PR review), and `ship-*` (planner, implementer, verifier, reviewer, e2e) |
-| `skills/` | `dotagents` (drives the installer), `ship` and `pr-to-develop` |
+| `subagents/` | `product-owner` and `product-explorer` (idea → discovery → GitHub backlog), `tech-lead` (decisions, repo, walking skeleton, CI), `developer` with its `frontend`, `backend` and `e2e` subagents (story → PR: push gate, e2e on the deployed environment, CI and review follow-up), `reviewer` (single verifier gate to Done: delegates to CIX's `cix-pr-reviewer` in non-personal projects, or runs with `review-verifier` in personal projects) |
+| `skills/` | `fleet` (routes work to the agents above and picks the harness and model, in this session or in Agent Orchestrator `ao` sessions), `dotagents` (drives the installer) and `pr-to-develop`. `fleet/profiles/` holds one profile per GitHub owner (account, base branch, branch name, PR format) |
 | `rules/` | global instructions (kept local, see below) |
 
 Every agent here is standalone: it works in any repo, with no framework or project
@@ -120,18 +120,82 @@ bin/board status
 
 ## Review: verified PR reviews
 
-The `reviewer` agent reviews any PR or branch, read-only. It checks the change against
-the story's acceptance criteria, `AGENTS.md`, the ADRs and the codebase's own
-precedents, ranks findings as **[Blocker]**, **[Important]** or **[Suggestion]**,
-and gives each one its fix as code (a committable suggestion where it fits). A
-separate `review-verifier` subagent tries to refute every Blocker and Important
-before it's reported, to keep false alarms out. It posts to the PR only after you
-confirm, always as a comment (never approve or merge), and with blockers moves the
-story's card back to In Progress. The `developer` runs it on its own PRs before
-handing them to you. Supports re-review after new commits.
+The `reviewer` agent is the fleet's read-only code reviewer and **single verifier**
+gate to move a story to Done:
 
-Adapted from CIX's `inic-pull-review-agent-plugin` (MIT): its review method,
-verifier and report format, without the company-specific standards.
+- **Non-personal projects** (e.g. `CIX-SOFTWARE-LABS`): delegates to CIX Software Labs'
+  `inic-pr-review` plugin (`cix-pr-reviewer` and its internal `cix-pr-verifier`).
+- **Personal projects** (`KKogaa` / `/mnt/Laplace/projects/personal/`): runs the built-in
+  generic review workflow verified by `review-verifier` (without calling CIX's plugin).
+- `developer` runs `reviewer` on its PR after CI passes, fixes any confirmed
+  **[Bloqueante]**/**[Blocker]** and **[Importante]**/**[Important]** findings, and
+  re-reviews once.
+- When `reviewer` passes (**Listo para fusionar** / **Ready to merge**, with CI green),
+  the story's board card moves to **Done** (`bin/board move <issue> done`). With
+  blockers or **Requiere discusión** / **Needs discussion**, it moves back to **In
+  Progress**.
+- Publishing comments to the PR still requires explicit human confirmation (comment
+  only; never approve or merge). Supports re-review after new commits.
+
+## Running the fleet in Agent Orchestrator (ao)
+
+The `fleet` skill routes work to the agents above, and when the
+Agent Orchestrator (`ao`) daemon is
+running it sends implementation and review work to ao sessions: one worker per repo,
+each prompt naming the agent (`Use the developer agent to ...`), with `reviewer`
+running inside the developer flow as the single verifier gate to Done. ao is optional;
+without it the fleet runs agents in the current session.
+
+Set up a repo, or a workspace folder of repos, in one command:
+
+```bash
+bin/ao-setup check ~/projects/acme     # read-only: what's registered, what's missing
+bin/ao-setup apply ~/projects/acme     # register + configure (idempotent)
+```
+
+`apply` registers each repo as an ao project, sets the worker and orchestrator harness
+(`--agent`, default `claude-code`), sets the base branch for new worktrees (`--base`:
+`auto` picks `develop` when the repo has one), and writes a managed block into the
+project's standing rules that points sessions at the `fleet` skill. For a repo inside a
+workspace, the block also names the workspace folder: ao worktrees live outside it, so
+its `AGENTS.md` and `.claude/` config aren't found otherwise. Other rules already on
+the project are kept.
+
+`ao-agents` is a live terminal view of the agents running inside each ao session
+(ao's sidebar shows sessions, not the subagents inside them). Run it in a terminal or
+an ao terminal tab; `--once` prints a snapshot. `bin/dotagents setup` links both tools
+into `~/.local/bin`, and `doctor` checks ao, its daemon and the links.
+
+## Models: which harness runs what
+
+The fleet runs on **Claude Code** and **agy** (Antigravity CLI). rulesync has no agy
+target, so `bin/agy-plugin build` turns what rulesync generated for Claude Code into a
+native agy plugin at `~/.gemini/config/plugins/dotagents/` (agents as `*.agent.md`,
+skills, and the global rules as `rules/AGENTS.md`), validates it with
+`agy plugin validate --strict`, and installs it. `bin/dotagents install|setup` run it
+after `rulesync generate`, and `doctor` checks it's up to date. OpenCode and Copilot
+CLI still get the generated files, but the fleet doesn't route work to them.
+
+`fleet-models.json` lists, per role (`plan`, `review`, `implement`, `scout`), the
+harness and model to try in order. Only three models are allowed (Claude Code Opus,
+agy Gemini 4 Neon, agy Claude Opus 5.5) and roles differ by effort: Neon first (xhigh
+for review, high for planning, medium for implementation, low for scouting), then
+Claude Code Opus at the same effort, then agy's Opus. `bin/fleet-route` picks the first
+that is installed, signed in and under its limits, and refuses any model outside the
+file's `allowed` list:
+
+```bash
+fleet-route roles                          # the table
+fleet-route pick developer --ao-flags      # --harness agy --model gemini-4-neon-high
+fleet-route usage                          # Claude Code tokens per model, last 5h / 7d
+fleet-route mark agy exhausted --for 5h    # agy hit its quota: skip it for 5 hours
+```
+
+Claude Code usage comes from the session transcripts (ao workers included); its plan
+limits only show in `/usage`, so set `harnesses.claude-code.limits` in
+`fleet-models.json` once you've compared the two. agy has no usage command, so a quota
+error is recorded with `mark`. Inside a session, every agent runs on Opus in Claude Code and inherits the session's
+model in agy.
 
 ## Adding external skills and agents
 
@@ -179,14 +243,14 @@ Work-specific files are gitignored and never published. rulesync still uses them
 the machine that has them:
 
 - `.rulesync/rules/CLAUDE.md`: global rules (GitHub account and org setup)
-- `.rulesync/skills/ship/profiles/cix.md`: the work profile for `/ship`
+- `.rulesync/skills/fleet/profiles/cix.md`: the work profile (CIX repos)
 
 On a fresh clone, add your own `.rulesync/rules/*.md` (with `root: true` frontmatter)
-and any extra `/ship` profiles next to `profiles/personal.md`.
+and any extra profiles next to `.rulesync/skills/fleet/profiles/personal.md`. Projects
+describe themselves in `.claude/fleet.md` (template in the `fleet` skill).
 
 ## Caveats
 
 - Claude-specific frontmatter (tool lists, models) lives under a `claudecode:` key and
   only applies to Claude Code. In Copilot and OpenCode the "read-only" agents are
   read-only only by their instructions.
-- `/ship` is written around Claude Code's subagents; elsewhere it's best-effort.

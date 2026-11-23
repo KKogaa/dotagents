@@ -11,7 +11,7 @@ description: >-
   for a frontend-only change.
 claudecode:
   tools: Read, Write, Edit, Grep, Glob, Bash
-  model: inherit
+  model: opus
 opencode:
   mode: subagent
 ---

@@ -1,5 +1,5 @@
 {
-  "$comment": "Checked by `bin/dotagents doctor`, enforced by `bin/dotagents setup`. rulesync is pinned exactly; bump it here after testing a new version.",
+  "$comment": "Checked by `bin/dotagents doctor`, enforced by `bin/dotagents setup`. rulesync is pinned exactly; bump it here after testing a new version. ao (Agent Orchestrator) is optional: doctor only warns.",
   "node": ">=22.22.0",
   "rulesync": "42.0.0",
   "gh": ">=2.40.0",
@@ -7,5 +7,6 @@
     "claude": ">=2.1.0",
     "copilot": ">=1.0.0",
     "opencode": ">=1.0.0"
-  }
+  },
+  "ao": ">=0.15.0"
 }

@@ -11,7 +11,7 @@ description: >-
   with different lenses; can also be used directly to explore an idea.
 claudecode:
   tools: Read, Grep, Glob, Bash, WebSearch, WebFetch
-  model: inherit
+  model: opus
 opencode:
   mode: subagent
 ---

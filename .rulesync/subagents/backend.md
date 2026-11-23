@@ -11,7 +11,7 @@ description: >-
   changes the contract. Can be used directly for a backend-only change.
 claudecode:
   tools: Read, Write, Edit, Grep, Glob, Bash
-  model: inherit
+  model: opus
 opencode:
   mode: subagent
 ---

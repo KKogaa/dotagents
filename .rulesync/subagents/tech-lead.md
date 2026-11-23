@@ -13,7 +13,7 @@ description: >-
   "create the repo for this backlog", or a technical decision that needs an ADR.
 claudecode:
   tools: Agent, Read, Write, Edit, Grep, Glob, Bash, WebSearch, WebFetch, AskUserQuestion
-  model: inherit
+  model: opus
 opencode:
   mode: all
 ---

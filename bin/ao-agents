@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""Live view of the Claude Code subagents running inside each AO session.
+
+AO's sidebar shows sessions; the agents a session starts (developer with its backend,
+frontend and e2e subagents, reviewer with cix-pr-reviewer/review-verifier, Explore scouts) run
+inside it as Claude Code subagents. Claude Code records each one under
+~/.claude/projects/<worktree-dir>/<session-uuid>/subagents/agent-*.{jsonl,meta.json};
+this reads those files and redraws every few seconds.
+
+Usage: ao-agents [--once] [--all] [--interval SECONDS] [SESSION_ID ...]
+  --all   also list finished subagents of older turns (default: last 15 per session)
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+HOME = Path.home()
+WORKTREES = HOME / ".ao" / "data" / "worktrees"
+PROJECTS = HOME / ".claude" / "projects"
+
+GREEN, YELLOW, DIM, BOLD, CYAN, RED, RESET = (
+    "\033[32m", "\033[33m", "\033[2m", "\033[1m", "\033[36m", "\033[31m", "\033[0m")
+
+
+def ao_sessions():
+    try:
+        out = subprocess.run(["ao", "session", "ls", "--json"], capture_output=True,
+                             text=True, timeout=10).stdout
+        data = json.loads(out).get("data", [])
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    return [s for s in data if not s.get("isTerminated")]
+
+
+def claude_dir(project_id, session_id):
+    path = str(WORKTREES / project_id / session_id)
+    return PROJECTS / path.replace("/", "-").replace(".", "-")
+
+
+def parse_ts(value):
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return None
+
+
+def first_ts(jsonl):
+    try:
+        with open(jsonl) as fh:
+            for line in fh:
+                ts = parse_ts(json.loads(line).get("timestamp"))
+                if ts:
+                    return ts
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def last_tool(jsonl):
+    """Name and short argument of the subagent's most recent tool call."""
+    try:
+        with open(jsonl, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 200_000))
+            lines = fh.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if entry.get("type") != "assistant":
+            continue
+        for part in reversed(entry.get("message", {}).get("content") or []):
+            if isinstance(part, dict) and part.get("type") == "tool_use":
+                args = part.get("input") or {}
+                hint = (args.get("description") or args.get("command") or args.get("file_path")
+                        or args.get("pattern") or args.get("prompt") or "")
+                hint = " ".join(str(hint).split())
+                return f"{part.get('name')}: {hint[:70]}"
+    return ""
+
+
+def fmt_dur(seconds):
+    seconds = int(max(0, seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m{seconds % 60:02d}s"
+    return f"{seconds // 3600}h{seconds % 3600 // 60:02d}m"
+
+
+def subagents(session_dir):
+    """Subagents of the session's current Claude transcript, oldest first."""
+    mains = sorted(session_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+    if not mains:
+        return []
+    sub_dir = mains[-1].with_suffix("") / "subagents"
+    rows = []
+    for meta_path in sub_dir.glob("agent-*.meta.json"):
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (OSError, ValueError):
+            continue
+        jsonl = meta_path.with_name(meta_path.name.replace(".meta.json", ".jsonl"))
+        try:
+            mtime = jsonl.stat().st_mtime
+        except OSError:
+            mtime = meta_path.stat().st_mtime
+        start = first_ts(jsonl)
+        rows.append({
+            "type": meta.get("agentType", "?"),
+            "desc": meta.get("description", ""),
+            "depth": meta.get("spawnDepth", 1),
+            "background": meta.get("requestShape") == "background",
+            "finished": bool(meta.get("finished")),
+            "start": start.timestamp() if start else mtime,
+            "end": mtime,
+            "jsonl": jsonl,
+        })
+    rows.sort(key=lambda r: r["start"])
+    return rows
+
+
+def render(args):
+    now = time.time()
+    lines = [f"{BOLD}AO agents{RESET}  {DIM}{datetime.now():%H:%M:%S}  "
+             f"(Ctrl-C to quit){RESET}", ""]
+    sessions = [s for s in ao_sessions() if s.get("harness") == "claude-code"
+                and (not args.sessions or s["id"] in args.sessions)]
+    if not sessions:
+        lines.append(f"{DIM}No live claude-code AO sessions.{RESET}")
+    for s in sessions:
+        activity = s.get("activity", "?")
+        colour = GREEN if activity == "active" else DIM
+        lines.append(f"{BOLD}{s['id']}{RESET}  {s.get('displayName', '')}  "
+                     f"{colour}[{activity}]{RESET}")
+        rows = subagents(claude_dir(s.get("projectId", ""), s["id"]))
+        if not args.all:
+            running = [r for r in rows if not r["finished"]]
+            done = [r for r in rows if r["finished"]][-15:]
+            rows = sorted(done + running, key=lambda r: r["start"])
+        if not rows:
+            lines.append(f"  {DIM}no subagents yet{RESET}")
+        for r in rows:
+            indent = "  " * r["depth"]
+            bg = f" {DIM}(bg){RESET}" if r["background"] else ""
+            if r["finished"]:
+                lines.append(f"{indent}{GREEN}✓{RESET} {r['type']:<17} {r['desc'][:55]:<55} "
+                             f"{DIM}{fmt_dur(r['end'] - r['start'])}{RESET}{bg}")
+                continue
+            idle = now - r["end"]
+            mark, col = (f"{YELLOW}●{RESET}", YELLOW) if idle < 300 else (f"{RED}?{RESET}", RED)
+            lines.append(f"{indent}{mark} {col}{r['type']:<17}{RESET} {r['desc'][:55]:<55} "
+                         f"{fmt_dur(now - r['start'])}{bg}")
+            tool = last_tool(r["jsonl"])
+            quiet = f", quiet {fmt_dur(idle)}" if idle > 30 else ""
+            if tool or quiet:
+                lines.append(f"{indent}    {CYAN}↳ {tool}{RESET}{DIM}{quiet}{RESET}")
+        lines.append("")
+    lines.append(f"{DIM}✓ done  {YELLOW}●{RESET}{DIM} running  {RED}?{RESET}{DIM} no output "
+                 f"for 5m+ (stuck or waiting){RESET}")
+    return "\n".join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("sessions", nargs="*", help="AO session ids (default: all)")
+    parser.add_argument("--once", action="store_true", help="print once and exit")
+    parser.add_argument("--all", action="store_true", help="show every finished subagent")
+    parser.add_argument("--interval", type=float, default=3.0)
+    args = parser.parse_args()
+    if args.once:
+        print(render(args))
+        return
+    try:
+        while True:
+            frame = render(args)
+            sys.stdout.write("\033[H\033[2J" + frame + "\n")
+            sys.stdout.flush()
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()
