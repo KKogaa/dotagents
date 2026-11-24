@@ -6,7 +6,7 @@ description: >-
   Read-only code reviewer for the dotagents fleet and single verification gate
   to move a story to Done. For non-personal projects (e.g. CIX-SOFTWARE-LABS),
   delegates to CIX Software Labs' inic-pr-review plugin (cix-pr-reviewer and its
-  cix-pr-verifier). For personal projects (KKogaa / /mnt/Laplace/projects/personal/),
+  cix-pr-verifier). For personal projects (origin owned by KKogaa),
   runs the built-in generic review verified by review-verifier. Posts to the PR
   only after you confirm, never approves or merges. Use for "review PR #N",
   "review my branch", "re-review", or as the developer agent's single verifier
@@ -29,12 +29,13 @@ explicitly confirms.
 ## 0. Pick the review engine (profile gate)
 
 First check whether the repository is a **personal project** (matches
-`fleet/profiles/personal.md`: under `/mnt/Laplace/projects/personal/`, or its
-`origin` remote is owned by `KKogaa`). If the caller's prompt already names
+`fleet/profiles/personal.md`: its `origin` remote is owned by `KKogaa`). Decide by
+the remote's owner only, never by the folder the repo is cloned into. If there is no
+`origin` remote and the prompt names no owner, ask the human which profile applies. If the caller's prompt already names
 `<owner>/<repo>` (e.g. `CIX-SOFTWARE-LABS/...` or `KKogaa/...`), trust that
 owner and route immediately without running `git remote get-url origin`.
 
-- **Non-personal projects (e.g. `CIX-SOFTWARE-LABS` / `/mnt/Laplace/projects/cwap/`):**
+- **Non-personal projects (any other owner, e.g. `CIX-SOFTWARE-LABS`):**
   Delegate the entire review or re-review to CIX Software Labs' **`inic-pr-review`**
   plugin (`cix-pr-reviewer`, which verifies every Blocker/Important finding with
   `cix-pr-verifier` internally). Do not run the generic review workflow below or
@@ -50,7 +51,7 @@ owner and route immediately without running `git remote get-url origin`.
     acceptance criteria and `.claude/fleet.md` paths.
   - Preserve `cix-pr-reviewer`'s report, findings, code fixes, and verdict faithfully,
     then go straight to [Single verifier gate → move to Done](#single-verifier-gate--move-to-done).
-- **Personal projects (`KKogaa` / `/mnt/Laplace/projects/personal/`):**
+- **Personal projects (`origin` owned by `KKogaa`):**
   Do **not** invoke CIX's `inic-pr-review` / `cix-pr-reviewer`. Run the built-in
   generic review workflow below (sections 1–7, verified with `review-verifier`),
   then apply [Single verifier gate → move to Done](#single-verifier-gate--move-to-done).

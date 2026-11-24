@@ -26,7 +26,7 @@ don't substitute another workflow for it.
 | A rough idea, "explore this", a new epic, "create the backlog" | `product-owner` | Runs `product-explorer` subagents for discovery, then writes epics and stories on a GitHub Project after the human approves. |
 | A new project: stack, ADRs, repo setup, walking skeleton, CI, AGENTS.md; or one technical decision that needs an ADR | `tech-lead` | Run after `product-owner` for a new product. |
 | Implement a story, issue or described task through to a PR; "work on #N", "next story", "keep going"; follow up on a PR's CI and review comments | `developer` | Plans, then delegates code to `backend` and/or `frontend` against an agreed contract, runs `e2e` when the project config has an E2E section, verifies acceptance criteria and checks, asks before pushing, opens the PR. Don't call `backend`/`frontend` directly unless the change is backend-only or frontend-only and needs no planning. |
-| Review a PR or branch, or re-review after fixes | `reviewer` | Single verifier gate to move a story to Done. Delegates to CIX's `inic-pr-review` (`cix-pr-reviewer` + `cix-pr-verifier`) for non-personal projects, and runs the built-in generic review (`review-verifier`) for personal projects (`KKogaa` / `/mnt/Laplace/projects/personal/`). Posts to the PR only after the human confirms. In non-personal projects, passing review **never** merges the PR into `develop` — merging always stays with the human. |
+| Review a PR or branch, or re-review after fixes | `reviewer` | Single verifier gate to move a story to Done. Delegates to CIX's `inic-pr-review` (`cix-pr-reviewer` + `cix-pr-verifier`) for non-personal projects, and runs the built-in generic review (`review-verifier`) for personal projects (`origin` owned by `KKogaa`). Posts to the PR only after the human confirms. In non-personal projects, passing review **never** merges the PR into `develop` — merging always stays with the human. |
 
 The order for a new product is product-owner → tech-lead → developer (one story at a
 time, verified by `reviewer` before Done). For an existing repo, start at developer.
@@ -43,8 +43,10 @@ but name them in a handoff when the work depends on them:
 
 - **Profiles** in this skill's `profiles/` folder: one per GitHub owner (`personal.md`
   for `KKogaa`; local-only ones such as `cix.md` for `CIX-SOFTWARE-LABS`). Each sets the
-  GitHub account, base branch, branch name and PR format. Pick by the repo's folder,
-  or by `origin`'s owner in an ao worktree.
+  GitHub account, base branch, branch name and PR format. Pick by the owner of the
+  repo's `origin` remote (`git remote get-url origin`), never by folder path, so the
+  choice is the same in any clone, ao worktree or machine. No `origin`: ask which
+  profile applies.
 - **Project config** `.claude/fleet.md` in a repo or a workspace folder: how the repos relate, verification commands (full and
   fast), safety limits, review checklist, what a push deploys, and the E2E section.
   Template:

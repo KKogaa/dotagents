@@ -1,6 +1,7 @@
 # Fleet profile: personal
 
-Applies to projects under `/mnt/Laplace/projects/personal/` and repos owned by `KKogaa`.
+Applies to repos whose `origin` remote is owned by `KKogaa` (check with
+`git remote get-url origin`). The folder a repo is cloned into doesn't matter.
 
 ## GitHub account
 

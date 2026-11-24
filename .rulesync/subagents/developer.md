@@ -224,7 +224,7 @@ the plan, update both sides if needed, and re-delegate.
     `cix-pr-verifier` internally. Tell it: `"Review PR #<n> in <owner/repo> and publish
     the review and inline finding comments on the PR (already confirmed by the user; do
     not approve or request changes)."`
-  - **Personal projects** (`KKogaa` / `/mnt/Laplace/projects/personal/`): invoke the
+  - **Personal projects** (`origin` owned by `KKogaa`): invoke the
     **`reviewer`** subagent (Claude Code: `subagent_type: reviewer`; agy: `TypeName:
     reviewer`), which runs the built-in generic review with `review-verifier`, with the
     same publish instruction.

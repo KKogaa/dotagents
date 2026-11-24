@@ -125,7 +125,7 @@ gate to move a story to Done:
 
 - **Non-personal projects** (e.g. `CIX-SOFTWARE-LABS`): delegates to CIX Software Labs'
   `inic-pr-review` plugin (`cix-pr-reviewer` and its internal `cix-pr-verifier`).
-- **Personal projects** (`KKogaa` / `/mnt/Laplace/projects/personal/`): runs the built-in
+- **Personal projects** (`origin` owned by `KKogaa`): runs the built-in
   generic review workflow verified by `review-verifier` (without calling CIX's plugin).
 - `developer` runs `reviewer` on its PR after CI passes, fixes any confirmed
   **[Bloqueante]**/**[Blocker]** and **[Importante]**/**[Important]** findings, and
