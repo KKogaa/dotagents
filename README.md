@@ -59,6 +59,68 @@ the external skills and agents, generates every tool's files, and ends with
 
 `delete` is off, so skills installed by other tools in those folders are left alone.
 
+## New machine: Windows + WSL
+
+Everything runs inside WSL; Windows only hosts it. Work through this list in order.
+`setup.sh` covers step 6 only; the rest are things this repo checks but doesn't install.
+
+1. **WSL 2 with Ubuntu.** In an admin PowerShell: `wsl --install -d Ubuntu`, reboot,
+   then open Ubuntu and create your user. Every command below runs in that shell.
+2. **Base packages and Node.**
+   ```bash
+   sudo apt update && sudo apt install -y git curl build-essential unzip
+   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+   exec bash && nvm install 22 && nvm alias default 22
+   git config --global core.autocrlf input
+   ```
+   Check `which node gh` points inside WSL (`/home/...` or `/usr/...`), not at
+   `/mnt/c/...`: Windows' PATH leaks into WSL and a Windows `node` or `gh` breaks the
+   scripts. If it does, set `appendWindowsPath = false` under `[interop]` in
+   `/etc/wsl.conf` and run `wsl --shutdown` from PowerShell.
+3. **GitHub CLI.** Install it with apt
+   ([instructions](https://github.com/cli/cli/blob/trunk/docs/install_linux.md)), then
+   sign in with both accounts: your work account and `KKogaa` (the personal profile
+   uses `gh auth token -u KKogaa`).
+   ```bash
+   gh auth login                                  # once per account
+   gh auth switch -u <work-account>               # the default for CIX repos
+   gh auth refresh -h github.com -s project       # GitHub Projects (board, backlog)
+   gh auth setup-git
+   ```
+4. **Harnesses.** Install and sign in to Claude Code and agy (Antigravity CLI); the
+   fleet routes work to these two. Copilot CLI and OpenCode are optional. The minimum
+   versions are in `requirements.json`.
+5. **Clone into the WSL filesystem**, not under `/mnt/c` (much slower, and file
+   watching is unreliable there):
+   ```bash
+   mkdir -p ~/projects/personal && cd ~/projects/personal
+   git clone https://github.com/KKogaa/dotagents && cd dotagents
+   ```
+   Profiles are picked by the owner of a repo's `origin`, so any folder layout works.
+6. **Copy the local-only files from your old machine** before running setup, so
+   they're included in the generated files (see [Local-only files](#local-only-files)):
+   `.rulesync/rules/CLAUDE.md` and `.rulesync/skills/fleet/profiles/cix.md`. Use `scp`
+   or a password manager; never commit them. Then run `./setup.sh`.
+7. **CIX's `inic-pr-review` plugin** (reviews in CIX repos). Install the same version in
+   both harnesses: in Claude Code, add its marketplace and install
+   `inic-pr-review@inic-pr-review-marketplace` (`/plugin`); in agy, put it in
+   `~/.gemini/config/plugins/inic-pr-review/` and check it with
+   `agy plugin validate <dir> --strict`. `doctor` warns when the two versions differ.
+8. **agy settings for Orchestrator.** In `~/.gemini/antigravity-acp/settings.json`
+   (create it, or merge into the existing file):
+   ```json
+   { "allowNonWorkspaceAccess": true, "toolPermission": "always-proceed" }
+   ```
+   Without these, agy subagents in ao sessions time out on commands and file reads.
+9. **Agent Orchestrator.** Install it so the `ao` CLI and its daemon run inside WSL,
+   where the repos and harnesses are, and start it. Then register each repo or
+   workspace folder: `bin/ao-setup check ~/projects/<workspace>`, then `apply`.
+   Registrations live in ao's own database, so redo this on every machine.
+10. **Other skills** that other installers put in `~/.agents/skills` or
+    `~/.claude/skills` (Jelou, Azure, ...) aren't part of this repo. Reinstall the ones
+    you use from their own sources.
+11. **Check:** `bin/dotagents doctor` should end with no `fail`.
+
 ## Workflow
 
 Edit files in `.rulesync/`, never the generated copies, then:
