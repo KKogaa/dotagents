@@ -10,8 +10,8 @@ All sources live in `.rulesync/`:
 
 | Folder | Contents |
 |---|---|
-| `subagents/` | `product-owner` and `product-explorer` (idea → discovery → GitHub backlog), `tech-lead` (decisions, repo, walking skeleton, CI), `developer` with its `frontend`, `backend` and `e2e` subagents (story → PR: push gate, e2e on the deployed environment, CI and review follow-up), `reviewer` (single verifier gate to Done: delegates to CIX's `cix-pr-reviewer` in non-personal projects, or runs with `review-verifier` in personal projects) |
-| `skills/` | `fleet` (routes work to the agents above and picks the harness and model, in this session or in Agent Orchestrator `ao` sessions), `dotagents` (drives the installer) and `pr-to-develop`. `fleet/profiles/` holds one profile per GitHub owner (account, base branch, branch name, PR format) |
+| `subagents/` | `product-owner` and `product-explorer` (idea → discovery → GitHub backlog), `tech-lead` (decisions, repo, walking skeleton, CI), `developer` with its `e2e` subagent (story/bug/refactor → PR using pstack playbooks and principles inside the dotagents SDLC shell: push gate, deployed e2e, CI and review follow-up), `reviewer` (single verifier gate to Done: delegates to CIX's `cix-pr-reviewer` in non-personal projects, or runs with `review-verifier` in personal projects) |
+| `skills/` | `fleet` (routes work to the agents above and picks the harness and model, in this session or in Agent Orchestrator `ao` sessions), `how` (read-only codebase walkthrough), `grilling` (frontier-round design-tree interview), `dotagents` (drives the installer), `pr-to-develop`, plus curated external skills: cherry-picked `pstack` skills (`sharpen`, `reframe`, `why`, `architect`, `blast-radius`, `tdd`, `correct`, `unslop`, `typescript-best-practices`), `mattpocock/skills` design/architecture skills (`domain-modeling`, `grill-with-docs`, `codebase-design`, `improve-codebase-architecture`), and `design`/`design-system`. `fleet/profiles/` holds one profile per GitHub owner (account, base branch, branch name, PR format) |
 | `rules/` | global instructions (kept local, see below) |
 
 Every agent here is standalone: it works in any repo, with no framework or project
@@ -167,10 +167,11 @@ bin/repo-setup apply owner/repo --protect --require-check ci   # after CI exists
 ## Implementation: story to pull request
 
 The `developer` agent takes the next ready story from the GitHub Project (or the one
-you name), claims it, plans it, and delegates the code to the `frontend` and/or
-`backend` subagents. When a story needs both, it writes the API contract first and
-runs them in parallel. It then verifies every acceptance criterion and the project's
-checks, opens the PR, and moves the card to review. Card moves are scripted:
+you name), claims it, selects a `pstack` playbook (`feature`, `bug-fix`, `refactoring`,
+or `investigation`), implements the change using the cherry-picked `pstack` skills and
+core principles, verifies every acceptance criterion and the project's checks, runs
+deployed `e2e` when configured, opens the PR after the push gate, and moves the card
+through review. Card moves are scripted:
 
 ```bash
 bin/board next                  # next ready story: P0 first, smallest first, deps closed

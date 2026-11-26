@@ -116,9 +116,9 @@ function fleetBlock(kind, workspace) {
   if (kind === "worker") {
     lines.push(
       "This session is part of the dotagents software factory. Route the task with the `fleet` skill:",
-      "implementing a story or task goes to the `developer` agent (it delegates to `backend` / `frontend`",
-      "and runs `cix-pr-reviewer` directly in non-personal projects or `reviewer` in personal projects",
-      "as the single verifier gate to Done), standalone PR reviews to `reviewer`, an idea or backlog to",
+      "implementing a story or task goes to the `developer` agent (it uses pstack playbooks and runs",
+      "`cix-pr-reviewer` directly in non-personal projects or `reviewer` in personal projects as the",
+      "single verifier gate to Done), standalone PR reviews to `reviewer`, an idea or backlog to",
       "`product-owner`, project setup or an ADR to `tech-lead`. In non-personal projects, never merge a",
       "PR into `develop` (even after review passes) — leave merging to the human. If the prompt names an",
       "agent, use that one. Don't switch to another workflow. Keep the human in the loop at every plan",

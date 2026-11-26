@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Live view of the Claude Code and Antigravity (agy) subagents running inside each AO session.
 
-AO's sidebar shows sessions; the agents a session starts (developer with its backend,
-frontend and e2e subagents, reviewer with cix-pr-reviewer/cix-pr-verifier/review-verifier,
-Explore scouts) run inside it as subagents.
+AO's sidebar shows sessions; the agents a session starts (developer with its e2e
+subagent, reviewer with cix-pr-reviewer/cix-pr-verifier/review-verifier, Explore
+scouts) run inside it as subagents.
 - Claude Code records each one under ~/.claude/projects/<worktree-dir>/<session-uuid>/subagents/.
 - Antigravity (agy) records each conversation under ~/.gemini/antigravity-acp/brain/<uuid>/.
 This reads those files and redraws every few seconds.

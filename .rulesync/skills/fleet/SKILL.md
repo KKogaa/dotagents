@@ -4,11 +4,12 @@ description: >-
   Route software work to the dotagents agent fleet (the software factory)
   instead of choosing an approach yourself: product-owner for ideas and
   backlogs, tech-lead for project setup and technical decisions, developer
-  (with backend and frontend) to implement a story or task through to a PR,
-  reviewer to review it. Also covers running that work in Agent Orchestrator
-  (ao) sessions, one per repo, with a prompt that names the agent. Use whenever
-  the user asks to plan, build, implement, change, fix or review software, to
-  "use my agents / fleet / factory", or to run a task "in ao".
+  (using pstack playbooks and skills inside the dotagents SDLC shell) to
+  implement a story or task through to a PR, reviewer to review it. Also covers
+  running that work in Agent Orchestrator (ao) sessions, one per repo, with a
+  prompt that names the agent. Use whenever the user asks to plan, build,
+  implement, change, fix or review software, to "use my agents / fleet /
+  factory", or to run a task "in ao".
 targets:
   - '*'
 ---
@@ -25,16 +26,21 @@ don't substitute another workflow for it.
 |---|---|---|
 | A rough idea, "explore this", a new epic, "create the backlog" | `product-owner` | Runs `product-explorer` subagents for discovery, then writes epics and stories on a GitHub Project after the human approves. |
 | A new project: stack, ADRs, repo setup, walking skeleton, CI, AGENTS.md; or one technical decision that needs an ADR | `tech-lead` | Run after `product-owner` for a new product. |
-| Implement a story, issue or described task through to a PR; "work on #N", "next story", "keep going"; follow up on a PR's CI and review comments | `developer` | Plans, then delegates code to `backend` and/or `frontend` against an agreed contract, runs `e2e` when the project config has an E2E section, verifies acceptance criteria and checks, asks before pushing, opens the PR. Don't call `backend`/`frontend` directly unless the change is backend-only or frontend-only and needs no planning. |
+| Implement a story, bug, refactor, or task through to a PR; "work on #N", "next story", "keep going"; follow up on a PR's CI and review comments | `developer` | Uses pstack playbooks (`feature`, `bug-fix`, `refactoring`, `investigation`) and principles inside the dotagents SDLC shell: runs `e2e` when `.claude/fleet.md` has an E2E section, verifies acceptance criteria and checks, asks before pushing, opens the PR, and runs the single reviewer gate. |
 | Review a PR or branch, or re-review after fixes | `reviewer` | Single verifier gate to move a story to Done. Delegates to CIX's `inic-pr-review` (`cix-pr-reviewer` + `cix-pr-verifier`) for non-personal projects, and runs the built-in generic review (`review-verifier`) for personal projects (`origin` owned by `KKogaa`). Posts to the PR only after the human confirms. In non-personal projects, passing review **never** merges the PR into `develop` — merging always stays with the human. |
 
 The order for a new product is product-owner → tech-lead → developer (one story at a
-time, verified by `reviewer` before Done). For an existing repo, start at developer.
+time, verified by `reviewer` before Done). For greenfield design and architectural
+health, use `grill-with-docs` (backed by `grilling` and `domain-modeling` for
+`GLOSSARY.md` + ADRs), `codebase-design`, and `improve-codebase-architecture`. For
+an existing repo, start at developer (or use the standalone pstack pre-dev skills
+directly: `sharpen`, `reframe`, `how`, `why`, `architect`, `blast-radius`, `tdd`,
+`correct`, `unslop`, `typescript-best-practices`).
 
 Agents meant to be called only by another agent: `product-explorer` (by
-product-owner and tech-lead), `backend`/`frontend` and `e2e` (by developer),
-`review-verifier` (by `reviewer` in personal projects), and `cix-pr-verifier`
-(internally by `cix-pr-reviewer` in non-personal projects).
+product-owner and tech-lead), `e2e` (by developer), `review-verifier` (by
+`reviewer` in personal projects), and `cix-pr-verifier` (internally by
+`cix-pr-reviewer` in non-personal projects).
 
 ## Profiles and project config
 
@@ -169,7 +175,7 @@ other model is refused):
 |---|---|---|---|
 | `plan` | product-owner, tech-lead, developer | agy `gemini-4-neon-high` | Claude Code `opus` (high), agy `claude-opus-5-5-high` |
 | `review` | reviewer (and `cix-pr-reviewer` in non-personal projects) | agy `gemini-4-neon-xhigh` | Claude Code `opus` (xhigh), agy `claude-opus-5-5-high` |
-| `implement` | backend, frontend (started on their own) | agy `gemini-4-neon-medium` | Claude Code `opus` (medium), agy `claude-opus-5-5-medium` |
+| `implement` | standalone focused implementation (medium effort) | agy `gemini-4-neon-medium` | Claude Code `opus` (medium), agy `claude-opus-5-5-medium` |
 | `scout` | product-explorer, review-verifier, lookups | agy `gemini-4-neon-low` | Claude Code `opus` (low), agy `claude-opus-5-5-low` |
 
 The file is the source of truth; this table is a summary. Never pass `--model` to a

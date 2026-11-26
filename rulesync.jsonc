@@ -18,6 +18,31 @@
       ],
       "ref": "v2.15.0",
       "path": ".claude/skills"
+    },
+    {
+      "source": "cursor/plugins",
+      "skills": [
+        "sharpen",
+        "reframe",
+        "why",
+        "architect",
+        "blast-radius",
+        "tdd",
+        "correct",
+        "unslop",
+        "typescript-best-practices"
+      ],
+      "path": "pstack/skills"
+    },
+    {
+      "source": "mattpocock/skills",
+      "skills": [
+        "domain-modeling",
+        "grill-with-docs",
+        "codebase-design",
+        "improve-codebase-architecture"
+      ],
+      "path": "skills/engineering"
     }
   ]
 }

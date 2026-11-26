@@ -18,6 +18,78 @@
         "design-system"
       ],
       "skillsPath": ".claude/skills"
+    },
+    "cursor/plugins": {
+      "requestedRef": "main",
+      "resolvedRef": "b1fbf4b60ac6813b4583ccc356850dafcf492665",
+      "resolvedAt": "2026-11-26T00:39:17.236Z",
+      "skills": {
+        "architect": {
+          "integrity": "sha256-03a99fd5880e986f1d8ae4b2ba87c18a4f4365bfe3b54f61eae69a765ce1359c"
+        },
+        "blast-radius": {
+          "integrity": "sha256-317baa100234b05603894a210ceed52e31b68c04fcf4dbcd39b6bce7ffe6f0ff"
+        },
+        "correct": {
+          "integrity": "sha256-e86f41b862349cc7019815c374a21074e3e2087618cf0fe8f2f869059f4d9937"
+        },
+        "reframe": {
+          "integrity": "sha256-460b720f769435b811749f582d0ca064ebcd2cbe3600c45425eb9f32058e26b0"
+        },
+        "sharpen": {
+          "integrity": "sha256-c1096f393a6ba908773521e8aeec0b3a38cc7abac4f6bb8a0c3641d725a1f270"
+        },
+        "tdd": {
+          "integrity": "sha256-5cb44876b687184a55d1e4355a830374ccd5e0e4c361d19e8f5928d3496704b1"
+        },
+        "typescript-best-practices": {
+          "integrity": "sha256-06bff9e87ccb45ed1b843b5b428a94ed3699193709b241e91d891f43dfd77edc"
+        },
+        "unslop": {
+          "integrity": "sha256-aa5f3897981c35714c84be065492f321f3e9b00bdbb0286712c17e3b70cf34a4"
+        },
+        "why": {
+          "integrity": "sha256-79926868e8042c1844cae9c5a6242b266b1aca0cbf30f00e8cc28e50c2331711"
+        }
+      },
+      "skillSelection": [
+        "architect",
+        "blast-radius",
+        "correct",
+        "reframe",
+        "sharpen",
+        "tdd",
+        "typescript-best-practices",
+        "unslop",
+        "why"
+      ],
+      "skillsPath": "pstack/skills"
+    },
+    "mattpocock/skills": {
+      "requestedRef": "main",
+      "resolvedRef": "6f7f7831a625f040a8e06a0e7954826b87ce775a",
+      "resolvedAt": "2026-11-26T00:46:50.016Z",
+      "skills": {
+        "codebase-design": {
+          "integrity": "sha256-35bfe62d56c0ae786a01540ca492232d588c119c3e2a19bcd2d49627b162c07c"
+        },
+        "domain-modeling": {
+          "integrity": "sha256-ab85be59e268148a45836cb45904e44163f2263a9cd451c1e42cb8d5dbe0929d"
+        },
+        "grill-with-docs": {
+          "integrity": "sha256-6b1292031c4f38a11309b9dad9be1141c1921c6edf86d1ae6da8b048fa71a349"
+        },
+        "improve-codebase-architecture": {
+          "integrity": "sha256-bb2b46f09aa3640009ec4a4a6fd9a03c8a03b752d30f924b5bb5bbeb8a732d2e"
+        }
+      },
+      "skillSelection": [
+        "codebase-design",
+        "domain-modeling",
+        "grill-with-docs",
+        "improve-codebase-architecture"
+      ],
+      "skillsPath": "skills/engineering"
     }
   }
 }

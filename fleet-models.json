@@ -37,8 +37,8 @@
       ]
     },
     "implement": {
-      "description": "Writing code against an agreed plan, when started on its own: backend, frontend.",
-      "agents": ["backend", "frontend"],
+      "description": "Standalone focused implementation at medium effort.",
+      "agents": [],
       "candidates": [
         { "harness": "agy", "model": "gemini-4-neon-medium" },
         { "harness": "claude-code", "model": "opus", "effort": "medium" },
