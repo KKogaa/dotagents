@@ -33,9 +33,11 @@ The order for a new product is product-owner → tech-lead → developer (one st
 time, verified by `reviewer` before Done). For greenfield design and architectural
 health, use `grill-with-docs` (backed by `grilling` and `domain-modeling` for
 `GLOSSARY.md` + ADRs), `codebase-design`, and `improve-codebase-architecture`. For
-an existing repo, start at developer (or use the standalone pstack pre-dev skills
+an existing repo, start at developer (or use the standalone pre-dev & craft skills
 directly: `sharpen`, `reframe`, `how`, `why`, `architect`, `blast-radius`, `tdd`,
-`correct`, `unslop`, `typescript-best-practices`).
+`correct`, `unslop`, plus the language best-practices skills `typescript-best-practices`,
+`java-best-practices`, `quarkus-best-practices`, `python-best-practices`,
+`go-best-practices`).
 
 Agents meant to be called only by another agent: `product-explorer` (by
 product-owner and tech-lead), `e2e` (by developer), `review-verifier` (by

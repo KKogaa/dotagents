@@ -91,7 +91,10 @@ Apply these throughout planning, coding, and verification:
   (HTTP, CLI, config, queues, external APIs); trust internal types; keep domain logic
   pure.
 - **Type system discipline.** Make illegal states unrepresentable, avoid unsafe casts,
-  and exhaust variants. Follow the `typescript-best-practices` skill for `.ts`/`.tsx`.
+  and exhaust variants. Apply the matching language skill when working in that stack:
+  `typescript-best-practices` (`.ts`/`.tsx`), `java-best-practices` (`.java`),
+  `quarkus-best-practices` (Quarkus), `python-best-practices` (`.py`), or
+  `go-best-practices` (`.go`).
 - **Fix root causes.** Trace each symptom to the first place the system went wrong
   and fix it there. A defensive guard is a fix only when the state it handles is
   legitimate.
